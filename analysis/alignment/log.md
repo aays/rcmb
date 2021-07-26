@@ -156,6 +156,122 @@ grep -P 'FAIL\tPer base sequence quality' */summary.txt # nothing!
 
 next up - will have to per Trimmomatic, get the adapters, and trim reads
 
+## 19/7/2021
+
+adapters are in `/research/tmp_apps/Trimmomatic/adapters/` - specifically
+`NEBNext_dual.fasta`
+
+```python
+>>> from Bio import SeqIO
+>>> d = [s for s in SeqIO.parse('/research/tmp_apps/Trimmomatic-0.36/adapters/NEBNext_dual.fasta', 'fasta
+... ')]
+>>> [s.id for s in d]
+['NEBNext_dualRead_1', 'NEBNext_dualRead_2', 'NEBNext_dualRead_1_RC', 'NEBNext_dualRead_2_RC']
+
+>>> x = ['AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC', 'AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT']
+>>> x[0] in [str(s.seq) for s in d]
+True
+
+>>> x[1] in [str(s.seq) for s in d]
+True
+```
+
+also includes the reverse complements, which is nice! symlinked into `bin`
+and it's off to the races w/ snakemake
+
+```bash
+snakemake -p --snakefile analysis/alignment/read_qc_trim.smk \
+--cores 16 trim_reads # going to take a while, so using 16 cores
+```
+
+## 21/7/2021
+
+trimming finally done - took a day and 6 hours, annd that's with
+16 threads! 
+
+getting fastqc going again:
+
+```bash
+time snakemake -p --snakefile analysis/alignment/read_qc_trim.smk fastqc_trim
+```
+
+in the meantime, used tmux to copy stderr from trimmomatic into
+`data/alignments/fastq_trim/trim.log` - forgot to set up the redirect! 
+
+## 23/7/2021
+
+fastqc'ing took another 13 hours but done now - time to check again:
+
+```bash
+time snakemake -p \
+--snakefile analysis/alignment/read_qc_trim.smk \
+unzip_fastqc_trim
+```
+
+looking for failed tests this time around:
+
+```bash
+cd data/alignments/fastq_trim/fastqc/
+grep -P 'FAIL\t' */summary.txt
+```
+
+only expected GC content 'failures' and a few for per base seq content
+
+making sure:
+
+```bash
+grep -P 'FAIL\tPer base' */summary.txt # no issues with sequence quality! 
+```
+
+looks good - time to align! starting a new snakefile called `alignment.smk`
+
+going to make a quick list of filenames to expedite snakemake rule writing:
+
+```bash
+touch data/alignments/fastq_trim/trim_names.txt
+touch data/alignments/samples.txt
+
+for fname in data/alignments/fastq_trim/*x*_trim_?.fq.gz; do
+    basename ${fname .fq.gz} >> data/alignments/fastq_trim/trim_names.txt;
+done
+
+for fname in data/alignments/fastq_trim/*x*_trim_?.fq.gz; do
+    basename ${fname%_trim_*.fq.gz} >> data/alignments/samples.txt;
+done
+
+sort data/alignments/samples.txt | uniq > data/alignments/samples_final.txt
+rm data/alignments/samples.txt
+mv -v data/alignments/samples_final.txt data/alignments/samples.txt
+
+# also this
+mkdir -p data/alignments/bam_temp
+```
+    
+and now to get this show on the road:
+
+```bash
+time snakemake -p -s analysis/alignment/alignment.smk --cores 16
+```
+
+## 26/7/2021
+
+took 22 hours but we're in the clear! 
+
+now to sort the bams:
+
+```bash
+time snakemake -pr -s analysis/alignment/alignment.smk --cores 4
+```
+
+fix mate info:
+
+```bash
+time snakemake -pr -s analysis/alignment/alignment.smk
+```
+
+
+
+
 
 
     
