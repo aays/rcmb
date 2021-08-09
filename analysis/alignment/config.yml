@@ -1,0 +1,6 @@
+# executables
+JAVA_EXEC: '/usr/bin/java'
+PICARD: 'bin/picard.jar'
+
+# paths
+TEMP_DIR: 'data/alignments/bam_temp/'

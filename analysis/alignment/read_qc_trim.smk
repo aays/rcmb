@@ -11,12 +11,16 @@ snakemake -p \
 import os
 from glob import glob
 
+# globals
+configfile: 'config.yml'
+
 SAMPLES = [os.path.basename(f.rstrip('fastq.gz'))
     for f in glob('data/alignments/fastq/*x*.fastq.gz')]
 PREFIXES = list(set([f.split('_')[0] for f in SAMPLES]))
 TRIM_PREFIXES = [f'{p}_trim_{i}' for p in PREFIXES for i in [1, 2]]
-JAVA_EXEC = 'usr/bin/java'
+JAVA_EXEC = config['JAVA_EXEC']
 
+# functions
 rule fastqc:
     input:
         expand("data/alignments/fastq/{sample}.fastq.gz", sample=SAMPLES)
