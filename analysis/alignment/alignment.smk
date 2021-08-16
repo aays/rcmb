@@ -11,21 +11,18 @@ snakemake -p \
 import os
 from glob import glob
 
-"""
-SAMPLES = [os.path.basename(f.rstrip('fastq.gz'))
-    for f in glob('data/alignments/fastq/*x*.fastq.gz')]
-PREFIXES = list(set([f.split('_')[0] for f in SAMPLES]))
-TRIM_PREFIXES = [f'{p}_trim_{i}' for p in PREFIXES for i in [1, 2]]
-"""
-JAVA_EXEC = '/usr/bin/java'
-PICARD = 'bin/picard.jar'
+# globals
+configfile: 'analysis/alignment/config.yml'
+JAVA_EXEC = config['JAVA_EXEC']
+PICARD = config['PICARD']
 
 with open('data/alignments/samples.txt', 'r') as f:
     SAMPLES = [sample.rstrip() for sample in f]
 
+# functions
 rule all:
     input:
-        expand("data/alignments/bam_temp/{sample}.fixMate.bam", sample=SAMPLES)
+        expand("data/alignments/bam/{sample}.bam", sample=SAMPLES)
 
 rule bwa_aln:
     input:
@@ -43,7 +40,7 @@ rule bam_sort:
     input:
         bam = "data/alignments/bam_temp/{sample}.bam"
     output:
-        "data/alignments/bam_temp/{sample}.sorted.bam"
+        temp("data/alignments/bam_temp/{sample}.sorted.bam")
     threads:
         4
     shell:
@@ -54,9 +51,32 @@ rule bam_fix_mate:
     input:
         bam = "data/alignments/bam_temp/{sample}.sorted.bam"
     output:
-        "data/alignments/bam_temp/{sample}.fixMate.bam"
+        temp("data/alignments/bam_temp/{sample}.fixMate.bam")
     shell:
         "{JAVA_EXEC} -jar {PICARD} FixMateInformation "
         "I={input.bam} O={output} "
         "VALIDATION_STRINGENCY=LENIENT"
 
+rule bam_read_groups:
+    input:
+        bam = "data/alignments/bam_temp/{sample}.fixMate.bam"
+    output:
+        "data/alignments/bam_temp/{sample}.RG.bam"
+    run:
+        sample_name = os.path.basename(input.bam).rstrip('fixMate.RG.bam')
+        shell("{JAVA_EXEC} -jar {PICARD} AddOrReplaceReadGroups "
+              "I={input.bam} O={output} "
+              "RGID={sample_name} RGLB=lib1 RGPL=illumina "
+              "RGPU=unit1 RGSM={sample_name} "
+              "VALIDATION_STRINGENCY=LENIENT")
+
+rule bam_mark_duplicates:
+    input:
+        bam = "data/alignments/bam_temp/{sample}.RG.bam"
+    output:
+        bam_out = "data/alignments/bam/{sample}.bam",
+        metrics = "data/alignments/bam_temp/{sample}_dup_metrics.txt"
+    shell:
+        "{JAVA_EXEC} -jar {PICARD} MarkDuplicates "
+        "I={input.bam} O={output.bam_out} "
+        "REMOVE_DUPLICATES=true METRICS_FILE={output.metrics}"

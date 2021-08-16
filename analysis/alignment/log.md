@@ -186,7 +186,7 @@ snakemake -p --snakefile analysis/alignment/read_qc_trim.smk \
 
 ## 21/7/2021
 
-trimming finally done - took a day and 6 hours, annd that's with
+trimming finally done - took a day and 6 hours, and that's with
 16 threads! 
 
 getting fastqc going again:
@@ -260,19 +260,216 @@ took 22 hours but we're in the clear!
 now to sort the bams:
 
 ```bash
+# rule bam_sort
 time snakemake -pr -s analysis/alignment/alignment.smk --cores 4
 ```
 
 fix mate info:
 
 ```bash
-time snakemake -pr -s analysis/alignment/alignment.smk
+# rule bam_fix_mate
+time snakemake -pr -s analysis/alignment/alignment.smk # took 15 hrs
 ```
 
+## 27/7/2021
 
+add read groups - each sample had two libraries, so we don't need to
+be too worried about lane effects
 
+```bash
+time snakemake -pr -s analysis/alignment/alignment.smk # done in 7 hrs
+```
 
+## 28/7/2021
 
+time for MarkDuplicates -
 
+```bash
+time snakemake -pr -s analysis/alignment/alignment.smk
+``` 
+
+## 9/8/2021
+
+so I assumed this had completed and moved on to salt project stuff for a bit,
+but it never actually did since it ran out of disk space! `temp()` in the snake
+file wasn't clearing the intermediate files in `bam_temp` (likely cause I was
+writing the rules one at a time) so I had to manually remove them just now
+
+here goes once more:
+
+```bash
+time snakemake -pr -s analysis/alignment/alignment.smk # took 16 hours
+```
+
+this should finish just fine - but I still need to realign the parental
+sequences to v6 for variant calling as well! can reuse much
+of `alignment.smk` but going to make a copy anyways so
+any other changes can be made as needed
+
+more pressing though is actual sample procurement - I
+need fastqs for
+
+```
+2343 (Flowers)
+2344 (Flowers)
+2932 (Jang and Ehrenreich - https://www.ncbi.nlm.nih.gov/biosample/1057854)
+3071
+3086
+GB119 (Rory)
+
+1691 (Gallaher)
+2935 (Flowers)
+3059
+3062
+2931 (Flowers)
+2342 (Flowers)
+1952 (Flowers)
+```
+
+need to get these from
+- Rory's 2019 paper, ENA accession PRJEB33012
+- Flowers 2015
+- Jang and Ehrenreich (CC2932)
+- Gallaher 2015
+
+whereas BAMs for the 30xx samples are in
+`/research/data/chlamydomonas/quebec/Individual.InDelRealigned.BAMs` -
+these need to be converted to fastq, perhaps via `bedtools` or
+something similar
+
+```bash
+# test
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/ERR337/004/ERR3378074/ERR3378074_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/run/ERR337/ERR3378074/GB119.F.fq.gz
+```
+
+the two are the same after a few Python checks, minus the accession number being
+added to the read id - going to download the latter files
+
+```bash
+# GB119
+wget ftp://ftp.sra.ebi.ac.uk/vol1/run/ERR337/ERR3378074/GB119.F.fq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/run/ERR337/ERR3378074/GB119.R.fq.gz
+
+# 1691
+https://www.ncbi.nlm.nih.gov/sra/SRX872474[accn]
+```
+
+## 10/8/2021
+
+using the SRA toolkit to get these reads:
+
+```bash
+# after symlinking fastq-dump and prefetch into bin/
+
+./bin/prefetch -v SRR1734615 # CC2931
+./bin/fastq-dump \ 
+--outdir /scratch/projects/chlamydomonas/recombination/parental_fastq \
+--split-files ~/ncbi/public/sra/SRR1734615.sra
+# renamed to CC2931_1 and _2 and gzipped - takes 55 min! 
+
+./bin/prefetch -v SRR1797948 # CC1691
+./bin/fastq-dump \
+--outdir /scratch/projects/chlamydomonas/recombination/parental_fastq/ \
+--split-files ~/ncbi/public/sra/SRR1797948.sra
+```
+
+other accessions I'm repeating this for:
+
+```
+SRR1734614 # CC-2344
+SRR1734613 # CC-1952
+SRR1734603 # CC-2935
+SRR1734601 # CC-2343
+SRR1734599 # CC-2342
+```
+
+before I do that - these already exist in `/research/data/chlamydomonas/species_wide/`!
+that saves a good bit of time - symlinking these instead
+
+I just need to keep 1691 and GB119 - all the Flowers strains are otherwise in this folder -
+and get the 30xx strains from the path Rob sent (`/research/data/chlamydomonas/quebec/fastq/`)
+
+also - looks like the strange case of 2932 continues, where it turns out it was technically
+two fastqs (one 50 bp and one 90 bp)
+
+## 12/8/2021
+
+today - modify read qc + trimming workflow for parental fastqs 
+
+fastqc will likely be its own step, after which based on the reports
+I might have to do sample specific trimming - we shall see
     
+```bash
+time snakemake -pr -s analysis/alignment/parental_fastq_qc.smk fastqc
+```
 
+## 13/8/2021
+
+looks good - now to unzip:
+
+```bash
+time snakemake -pr -s analysis/alignment/parental_fastq_qc.smk unzip_fastqc
+```
+
+checking the reports:
+
+```bash
+cd data/alignments/fastq/parental_fastqc/
+grep -P 'FAIL\t' */summary.txt
+```
+
+got some per base sequence quality failures - that's no good - no adapter
+content failures at least!
+
+```
+  1 CC1691_1_fastqc/summary.txt:FAIL        Per base sequence quality       CC1691_1.fastq.gz
+  2 CC1691_1_fastqc/summary.txt:FAIL        Per sequence GC content CC1691_1.fastq.gz
+  3 CC1691_2_fastqc/summary.txt:FAIL        Per base sequence quality       CC1691_2.fastq.gz
+  4 CC1691_2_fastqc/summary.txt:FAIL        Per sequence GC content CC1691_2.fastq.gz
+  5 CC2342_1_fastqc/summary.txt:FAIL        Per tile sequence quality       CC2342_1.fastq.gz
+  6 CC2342_2_fastqc/summary.txt:FAIL        Per tile sequence quality       CC2342_2.fastq.gz
+  7 CC2343_2_fastqc/summary.txt:FAIL        Per base sequence quality       CC2343_2.fastq.gz
+  8 CC2343_2_fastqc/summary.txt:FAIL        Per tile sequence quality       CC2343_2.fastq.gz
+  9 CC2344_2_fastqc/summary.txt:FAIL        Per base sequence quality       CC2344_2.fastq.gz
+ 10 CC2344_2_fastqc/summary.txt:FAIL        Per tile sequence quality       CC2344_2.fastq.gz
+ 11 CC2931_1_fastqc/summary.txt:FAIL        Per tile sequence quality       CC2931_1.fastq.gz
+ 12 CC2932_50_1_fastqc/summary.txt:FAIL     Per base sequence content       CC2932_50_1.fastq.gz
+ 13 CC2932_50_2_fastqc/summary.txt:FAIL     Per base sequence quality       CC2932_50_2.fastq.gz
+ 14 CC2932_50_2_fastqc/summary.txt:FAIL     Per base sequence content       CC2932_50_2.fastq.gz
+ 15 CC2932_90_1_fastqc/summary.txt:FAIL     Per base sequence content       CC2932_90_1.fastq.gz
+ 16 CC2932_90_1_fastqc/summary.txt:FAIL     Per sequence GC content CC2932_90_1.fastq.gz
+ 17 CC2932_90_2_fastqc/summary.txt:FAIL     Per base sequence content       CC2932_90_2.fastq.gz
+ 18 CC2932_90_2_fastqc/summary.txt:FAIL     Per sequence GC content CC2932_90_2.fastq.gz
+ 19 CC2935_1_fastqc/summary.txt:FAIL        Per tile sequence quality       CC2935_1.fastq.gz
+ 20 CC2935_2_fastqc/summary.txt:FAIL        Per base sequence quality       CC2935_2.fastq.gz
+ 21 CC2935_2_fastqc/summary.txt:FAIL        Per tile sequence quality       CC2935_2.fastq.gz
+ 22 CC3086_2_fastqc/summary.txt:FAIL        Per base sequence quality       CC3086_2.fastq.gz
+ 23 CC3086_2_fastqc/summary.txt:FAIL        Per tile sequence quality       CC3086_2.fastq.gz
+ 24 GB119_2_fastqc/summary.txt:FAIL Per tile sequence quality       GB119_2.fastq.gz
+```
+
+after looking at some of these `fastqc_data.txt` files, I think I ought to do a leading/trailing
+trim on top of the standard sliding window trim - the window size should also still be 4 bp, 
+PHRED 20 
+
+```bash
+time snakemake -pr -s analysis/alignment/parental_fastq_qc.smk trim_reads
+```
+
+## 15/8/2021
+
+done in just about 9.5 hours without an apparent hitch - now to write rules for
+fastqc and unzipping said fastqc results
+
+```bash
+time snakemake -pr -s analysis/alignment/parental_fastq_qc.smk fastqc_trim
+```
+
+## 16/8/2021
+
+unzipping the fastqc output:
+
+```bash
+time snakemake -pr -s analysis/alignment/parental_fastq_qc.smk unzip_fastqc_trim
+```
