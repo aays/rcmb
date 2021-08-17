@@ -415,7 +415,7 @@ time snakemake -pr -s analysis/alignment/parental_fastq_qc.smk unzip_fastqc
 checking the reports:
 
 ```bash
-cd data/alignments/fastq/parental_fastqc/
+cd data/alignments/parental_fastq/fastqc/
 grep -P 'FAIL\t' */summary.txt
 ```
 
@@ -473,3 +473,85 @@ unzipping the fastqc output:
 ```bash
 time snakemake -pr -s analysis/alignment/parental_fastq_qc.smk unzip_fastqc_trim
 ```
+
+checking the reports:
+
+```bash
+cd data/alignments/parental_fastq_trim/fastqc/
+grep -P 'FAIL\t' */summary.txt
+```
+
+looks like there are still some standouts:
+
+```
+CC2342_trim_1_fastqc/summary.txt:FAIL   Per tile sequence quality       CC2342_trim_1.fq.gz
+CC2342_trim_2_fastqc/summary.txt:FAIL   Per tile sequence quality       CC2342_trim_2.fq.gz
+CC2343_trim_2_fastqc/summary.txt:FAIL   Per tile sequence quality       CC2343_trim_2.fq.gz
+CC2344_trim_2_fastqc/summary.txt:FAIL   Per tile sequence quality       CC2344_trim_2.fq.gz
+CC2931_trim_1_fastqc/summary.txt:FAIL   Per tile sequence quality       CC2931_trim_1.fq.gz
+CC2932_50_trim_1_fastqc/summary.txt:FAIL        Per base sequence content       CC2932_50_trim_1.fq.gz
+CC2932_50_trim_2_fastqc/summary.txt:FAIL        Per base sequence content       CC2932_50_trim_2.fq.gz
+CC2932_90_trim_1_fastqc/summary.txt:FAIL        Per base sequence content       CC2932_90_trim_1.fq.gz
+CC2932_90_trim_2_fastqc/summary.txt:FAIL        Per base sequence content       CC2932_90_trim_2.fq.gz
+CC2935_trim_1_fastqc/summary.txt:FAIL   Per tile sequence quality       CC2935_trim_1.fq.gz
+CC2935_trim_2_fastqc/summary.txt:FAIL   Per tile sequence quality       CC2935_trim_2.fq.gz
+CC3086_trim_2_fastqc/summary.txt:FAIL   Per base sequence quality       CC3086_trim_2.fq.gz
+CC3086_trim_2_fastqc/summary.txt:FAIL   Per tile sequence quality       CC3086_trim_2.fq.gz
+GB119_trim_2_fastqc/summary.txt:FAIL    Per tile sequence quality       GB119_trim_2.fq.gz
+
+```
+
+manually looking at the per tile plots in the html files, it seems it's no more than a 
+single tile each time - going to proceed as normal with these
+
+the per base sequence content issues seem to step from a huge G-T disparity in the first
+base for all four of those examples
+
+that 3086 sample on the other hand looks like a total trainwreck - I'm going to redo
+trimming with a sliding window of 30 just for that, honestly - plus I think I'd rather
+this dataset have fewer but higher quality SNPs to begin with
+
+```bash
+time snakemake -pr -s analysis/alignment/parental_fastq_qc.smk trim_reads
+# SLIDINGWINDOW changed to 5:30
+```
+
+8 hours later - fastqc again:
+
+```bash
+time snakemake -pr -s analysis/alignment/parental_fastq_qc.smk fastqc_trim
+```
+
+## 17/8/2021
+
+unzipping:
+
+```bash
+time snakemake -pr -s analysis/alignment/parental_fastq_qc.smk unzip_fastqc_trim
+```
+
+you know the drill:
+
+```bash
+cd data/alignments/parental_fastq_trim/fastqc/
+grep -P 'FAIL\t' */summary.txt
+```
+
+cleaned up some failures, but not all:
+
+```
+CC2343_trim_2_fastqc/summary.txt:FAIL   Per tile sequence quality       CC2343_trim_2.fq.gz
+CC2344_trim_2_fastqc/summary.txt:FAIL   Per tile sequence quality       CC2344_trim_2.fq.gz
+CC2931_trim_1_fastqc/summary.txt:FAIL   Per tile sequence quality       CC2931_trim_1.fq.gz
+CC2932_50_trim_1_fastqc/summary.txt:FAIL        Per base sequence content       CC2932_50_trim_1.fq.gz
+CC2932_50_trim_2_fastqc/summary.txt:FAIL        Per base sequence content       CC2932_50_trim_2.fq.gz
+CC2932_90_trim_1_fastqc/summary.txt:FAIL        Per base sequence content       CC2932_90_trim_1.fq.gz
+CC2932_90_trim_2_fastqc/summary.txt:FAIL        Per base sequence content       CC2932_90_trim_2.fq.gz
+CC2935_trim_2_fastqc/summary.txt:FAIL   Per tile sequence quality       CC2935_trim_2.fq.gz
+CC3086_trim_2_fastqc/summary.txt:FAIL   Per base sequence quality       CC3086_trim_2.fq.gz
+CC3086_trim_2_fastqc/summary.txt:FAIL   Per tile sequence quality       CC3086_trim_2.fq.gz
+```
+
+looking at the plots in the html file and 3086 still seems lower qual than I'd like
+the 3' of the read despite the more aggressive trimming - I'm going to go ahead with
+SNP calls and see if the GQ scores bear this out
