@@ -555,3 +555,29 @@ CC3086_trim_2_fastqc/summary.txt:FAIL   Per tile sequence quality       CC3086_t
 looking at the plots in the html file and 3086 still seems lower qual than I'd like
 the 3' of the read despite the more aggressive trimming - I'm going to go ahead with
 SNP calls and see if the GQ scores bear this out
+
+## 7/9/2021
+
+hello from Vancouver! let's get this parental alignment/variant calling train rolling - 
+need to generate bams this time around
+
+```bash
+mkdir -p data/alignments/parental_bam_temp/
+mkdir -p data/alignments/parental_bam/
+
+time snakemake -pr --cores 16 \
+-s analysis/alignment/parental_alignment.smk
+```
+
+## 8/9/2021
+
+done in 16 hours - nice! forgot to index the bams though:
+
+```bash
+time snakemake -pr -s analysis/alignment/parental_alignment.smk bam_idx
+```
+
+now for variant calling - will need to create reference VCFs for each
+pair of parents - will do this in `analysis/genotyping/log.md`
+
+
