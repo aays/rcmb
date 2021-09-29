@@ -20,6 +20,11 @@ PREFIXES = list(set([re.search('(^[A-Z]{2}[0-9]{3,}[_590]*)_[12]', f).group(1)
     for f in SAMPLES]))
 TRIM_PREFIXES = [f'{p}_trim_{i}' for p in PREFIXES for i in [1,2]]
 
+rule all:
+    input:
+        expand("data/alignments/parental_fastq_trim/{prefix}.fq.gz",
+            prefix=TRIM_PREFIXES)
+
 rule fastqc:
     input:
         expand("data/alignments/parental_fastq/{sample}.fastq.gz", sample=SAMPLES)

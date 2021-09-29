@@ -580,4 +580,348 @@ time snakemake -pr -s analysis/alignment/parental_alignment.smk bam_idx
 now for variant calling - will need to create reference VCFs for each
 pair of parents - will do this in `analysis/genotyping/log.md`
 
+## 14/9/2021
+
+why are the trimmed 1691 files empty? time for some detective work
+
+it seems the original fastqs are 2.7G each - but *all* reads failed
+given the log:
+
+```
+TrimmomaticPE: Started with arguments:
+ -threads 1 -phred33 data/alignments/parental_fastq/CC1691_1.fastq.gz data/alignments/parental_fastq/CC1691_2.fastq.gz data/alignments/parental_fastq_trim/CC1691_trim_1.fq.gz data/alignments/parental_fastq_trim/CC1691_trim_unpaired_1.fq.gz data/alignments/parental_fastq_trim/CC1691_trim_2.fq.gz data/alignments/parental_fastq_trim/CC1691_trim_unpaired_2.fq.gz SLIDINGWINDOW:5:30 LEADING:5 TRAILING:5
+Input Read Pairs: 47423304 Both Surviving: 0 (0.00%) Forward Only Surviving: 0 (0.00%) Reverse Only Surviving: 0 (0.00%) Dropped: 47423304 (100.00%)
+TrimmomaticPE: Completed successfully
+```
+
+
+let's try running trimmomatic specifically on these with less stringent parameters
+(4:20 instead of 5:30 for the sliding window, for starters)
+
+```bash
+mkdir -p 1691_test
+
+time trimmomatic PE -threads 16 -phred33 \
+data/alignments/parental_fastq/CC1691_1.fastq.gz \
+data/alignments/parental_fastq/CC1691_2.fastq.gz \
+1691_test/CC1691_trim_1.fq.gz \
+1691_test/CC1691_trim_unpaired_1.fq.gz \
+1691_test/CC1691_trim_2.fq.gz \
+1691_test/CC1691_trim_unpaired_2.fq.gz \
+SLIDINGWINDOW:4:20 LEADING:5 TRAILING:5  # took 15 min
+```
+
+seems most reads survived - 
+
+```
+Input Read Pairs: 47423304 
+Both Surviving: 46061202 (97.13%) 
+Forward Only Surviving: 1302018 (2.75%) 
+Reverse Only Surviving: 46449 (0.10%) 
+Dropped: 13635 (0.03%)
+```
+let's try this again and incrementally increase the values - 
+
+```bash
+time trimmomatic PE -threads 16 -phred33 \
+data/alignments/parental_fastq/CC1691_1.fastq.gz \
+data/alignments/parental_fastq/CC1691_2.fastq.gz \
+1691_test/CC1691_trim_1.fq.gz \
+1691_test/CC1691_trim_unpaired_1.fq.gz \
+1691_test/CC1691_trim_2.fq.gz \
+1691_test/CC1691_trim_unpaired_2.fq.gz \
+SLIDINGWINDOW:5:20 LEADING:5 TRAILING:5 
+```
+
+also looks good -
+
+```
+Input Read Pairs: 47423304 
+Both Surviving: 46067989 (97.14%) 
+Forward Only Surviving: 1307487 (2.76%) 
+Reverse Only Surviving: 36269 (0.08%) 
+Dropped: 11559 (0.02%)
+TrimmomaticPE: Completed successfully
+```
+
+## 15/9/2021
+
+5:25?
+
+```
+Input Read Pairs: 47423304 
+Both Surviving: 23471503 (49.49%) 
+Forward Only Surviving: 13761704 (29.02%) 
+Reverse Only Surviving: 4820153 (10.16%) 
+Dropped: 5369944 (11.32%)
+TrimmomaticPE: Completed successfully # done in 4 min
+```
+
+that's a pretty substantial drop off - went from 97% to 49%! I can see how
+5:30 nuked it entirely
+
+checking the ms again, and I can see why - these reads are 2x50 bp! let's
+stick with the 5:25 dataset then - fewer reads but the reads need to be
+the highest quality possible
+
+replacing the trim fastqs in `data/alignment/parental_fastq_trim` with
+these and rerunning the alignment workflow
+
+```bash
+rm -v data/alignments/parental_fastq_trim/CC1691_trim*
+mv -v 1691_test/CC1691_* data/alignments/parental_fastq_trim/
+rmdir 1691_test
+
+time snakemake -pr --cores 16 \
+-s analysis/alignment/parental_alignment.smk
+```
+
+during the dry run, snakemake detected that it needed to remake `CC1691.bam`
+automatically because the 'input files [were] updated by another job' - neat! 
+
+that said the alignment itself seems to be breaking... it keeps hitting a read
+with a corrupted QUAL string, and finds two reads that are paired but have
+different names for some reason - looks like trimmomatic has introduced something
+funny here
+
+```
+[mem_sam_pe] paired reads have different names: "SRR1797948.47307894", "SRR1797948.47306786"
+
+Error in job bwa_aln while creating output file data/alignments/parental_bam_temp/CC1691.bam.
+RuleException:
+CalledProcessError in line 39 of /research/projects/chlamydomonas/genomewide_recombination/rcmb/analysis/alignment/parental_alignment.smk:
+Command 'time bwa mem -t 16 data/references/CC4532.w_organelles_MTplus.fa data/alignments/parental_fastq_trim/CC1691_trim_1.fq.gz data/alignments/parental_fastq_trim/CC1691_trim_2.fq.gz | samtools view -Sb - > data/alignments/parental_bam_temp/CC1691.bam' returned non-zero exit status 1.
+  File "/research/projects/chlamydomonas/genomewide_recombination/rcmb/analysis/alignment/parental_alignment.smk", line 39, in __rule_bwa_aln
+  File "/home/hasans11/.conda/env/work/lib/python3.6/concurrent/futures/thread.py", line 56, in run
+```
+
+going to try switchng the trim to 5:20 and using those files
+
+```
+Input Read Pairs: 47423304 
+Both Surviving: 46067989 (97.14%) 
+Forward Only Surviving: 1307487 (2.76%) 
+Reverse Only Surviving: 36269 (0.08%) 
+Dropped: 11559 (0.02%)
+```
+
+still breaking! looks like this problematic read is probably in the original:
+
+```
+[mem_sam_pe] paired reads have different names: "SRR1797948.47306876", "SRR1797948.47306774"
+
+[E::sam_parse1] CIGAR and query sequence are of different length
+[W::sam_read1] Parse error at line 90567849
+```
+
+going to try to generate a sam with the original - if it doesn't break, then
+it's likely trimmomatic is the culprit here
+
+```bash
+time bwa mem -t 16 data/references/CC4532.w_organelles_MTplus.fa \
+data/alignments/parental_fastq/CC1691_1.fastq.gz \
+data/alignments/parental_fastq/CC1691_2.fastq.gz > test.sam
+
+## | samtools view -Sb - > data/alignments/parental_bam_temp/CC1691.bam
+```
+
+## 16/9/2021
+
+looks like this worked - those weirdly named pair names are still a thing but
+the alignment completes successfully in ~20 min and the sam -> bam conversion
+happens without a hitch in another 10
+
+```
+[mem_sam_pe] paired reads have different names: "SRR1797948.47308282", "SRR1797948.47306792"
+```
+
+going to try generating 4:20 reads in this case, and then trying to align with
+those since it seems that the trimmed reads are experiencing some disparity
+between reads and equivalent cigar strings
+
+```bash
+time trimmomatic PE -threads 16 -phred33 \
+data/alignments/parental_fastq/CC1691_1.fastq.gz \
+data/alignments/parental_fastq/CC1691_2.fastq.gz \
+1691_test/CC1691_trim_1.fq.gz \
+1691_test/CC1691_trim_unpaired_1.fq.gz \
+1691_test/CC1691_trim_2.fq.gz \
+1691_test/CC1691_trim_unpaired_2.fq.gz \
+SLIDINGWINDOW:4:20 LEADING:5 TRAILING:5 
+```
+
+alignment time:
+
+```bash
+time bwa mem -t 20 data/references/CC4532.w_organelles_MTplus.fa \
+1691_test/CC1691_trim_1.fq.gz \
+1691_test/CC1691_trim_2.fq.gz > test_trim.sam # 16 min
+
+# looks good - moment of truth
+samtools view -Sb test_trim.sam > test_trim.bam
+```
+
+caused a parse error again! I don't get it
+
+```
+[W::sam_read1] Parse error at line 91308249
+[main_samview] truncated file.
+```
+
+looking at this line directly in python - it seems the read name is lopped off!
+
+```
+SRR1797948.46814928     163     cpDNA   202184  60      101M    =       202839  756     TAGTTACCCGAAGGGGTTTACATACTCCGAAGGAGGAAGCAGGCAGTGGTACAATAAATAACAATAAATAACAATAAATAACTAGTATATAAATATAGGAT     ;9:999;<<;9:<<;;:889;999:::;;::<<:<<99<<:<;<:<:<<:9:::99::99:;::99::99:;;:9:::9::;;;=;:9989:;9999<:89     NM:i:0  MD:Z:101 MC:Z:101M        AS:i:101        XS:i:47
+
+TCCGGGGAGTGCGTTGACTCCAGAAGGTTATTTGCCCGTCCACGATTG        ;:9;99<:<;;9:<;;;;9;:;<;:9;:;::;;<;9<<9999::<<;;;;;<:;;999<       NM:i:0  MD:Z:59 MC:Z:101M       AS:i:59 XS:i:38
+```
+
+let's try removing this and then converting to bam:
+
+```python
+from tqdm import tqdm
+with open('test_fixed.sam', 'w') as f_out:
+    with open('test_trim.sam', 'r') as f_in:
+        counter = 0
+        for line in tqdm(f_in):
+            if line.startswith('@') or line.startswith('SRR'):
+                f_out.write(line)
+            else:
+                counter += 1
+```
+
+converting:
+
+```bash
+samtools view -Sb test_fixed.sam > test_fixed.bam
+```
+
+this worked! hooray! going to have to update snakemake with
+some sort of stipulation for this - either that or remove 1691
+from it entirely, and keep a separate workflow for it
+
+```bash
+# trying with the 5:25 trimmed reads
+
+time bwa mem -t 20 data/references/CC4532.w_organelles_MTplus.fa \
+data/alignments/parental_fastq_trim/CC1691_trim_1.fq.gz \
+data/alignments/parental_fastq_trim/CC1691_trim_2.fq.gz > CC1691.sam # 16 min
+```
+
+doesn't seem reads are bonked the same way:
+
+```python
+>>> from tqdm import tqdm
+>>> with open('CC1691_fixed.sam', 'w') as f_out:
+...     counter = 0
+...     with open('CC1691.sam', 'r') as f:
+...         for line in tqdm(f):
+...             if line.startswith('@') or line.startswith('SRR'):
+...                 f_out.write(line)
+...             else:
+...                 counter += 1
+...                 continue
+91724748it [02:29, 612131.93it/s]
+>>> counter
+0
+```
+
+let's try the conversion:
+
+```bash
+time samtools view -Sb CC1691.sam > CC1691.bam
+```
+
+this worked?? let's try snakemake again then:
+
+```bash
+time snakemake -pr -s analysis/alignment/parental_alignment.smk \
+--cores 20
+```
+
+## 17/9/2021
+
+it broke again somehow - I'm so confused
+
+at this point I'm going to split the sam generation and sam -> bam
+conversion into two steps
+
+
+```bash
+time snakemake -pr -s analysis/alignment/parental_alignment.smk \
+--cores 20
+# now with new rule bam_convert
+```
+
+so this breaks - but when I run the command independently in the shell
+it's fine? I'll just do that and have snakemake pick up from `bam_convert`
+in this case
+
+```bash
+time bwa mem -t 20 data/references/CC4532.w_organelles_MTplus.fa \
+data/alignments/parental_fastq_trim/CC1691_trim_1.fq.gz \
+data/alignments/parental_fastq_trim/CC1691_trim_2.fq.gz > \
+data/alignments/parental_bam_temp/CC1691.sam
+
+time snakemake -pr --cores 20 -s analysis/alignment/parental_alignment.smk
+```
+
+THIS broke??? after it worked yesterday independent of snakemake?
+
+let's scan the outfile:
+
+```python
+from tqdm import tqdm
+with open('data/alignments/parental_bam_temp/CC1691.sam', 'r') as f:
+    counter = 0
+    lines = []
+    for i, line in tqdm(enumerate(f)):
+        if line.startswith('SRR') or line.startswith('@'):
+            continue
+        else:
+            counter += 1
+            lines.append(i)
+            lines.append(line)
+```
+
+looks like this is the culprit:
+
+```
+>>> lines
+[91643941, '9<799;:;;;=:;:9<<;<<=;<>:>:9<:<=<=99<<;<=;<;<;<;==>==::;;>>=>:9:;\tAS:i:0\tXS:i:0\n']
+```
+
+so let's create a corrected file without that truncated read and get
+back to business:
+
+```python
+from tqdm import tqdm
+with open('data/alignments/parental_bam_temp/CC1691_fixed.sam', 'w') as f_out:
+    with open('data/alignments/parental_bam_temp/CC1691.sam', 'r') as f:
+        counter = 0
+        lines = []
+        for i, line in tqdm(enumerate(f)):
+            if line.startswith('SRR') or line.startswith('@'):
+                f_out.write(line)
+            else:
+                counter += 1
+                lines.append(i)
+                lines.append(line)
+```
+
+do some renaming and get snakemake going again:
+
+```bash
+mv -v data/alignments/parental_bam_temp/CC1691.sam \
+data/alignments/parental_bam_temp/CC1691_old.sam
+
+mv -v data/alignments/parental_bam_temp/CC1691_fixed.sam \
+data/alignments/parental_bam_temp/CC1691.sam
+
+time snakemake -pr --cores 20 -s analysis/alignment/parental_alignment.smk
+```
+
+it worked! done in 2 hours - I ought to create a 'sam repair' script 
+for reproducibility's sake down the line
+
 

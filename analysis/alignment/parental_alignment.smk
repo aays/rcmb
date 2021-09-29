@@ -32,11 +32,20 @@ rule bwa_aln:
         fwd = "data/alignments/parental_fastq_trim/{sample}_trim_1.fq.gz",
         rev = "data/alignments/parental_fastq_trim/{sample}_trim_2.fq.gz",
     output:
-        temp("data/alignments/parental_bam_temp/{sample}.bam")
+        temp("data/alignments/parental_bam_temp/{sample}.sam")
     threads:
-        16
+        20
     shell:
-        "time bwa mem -t {threads} {input.ref} {input.fwd} {input.rev} | samtools view -Sb - > {output}"
+        # "time bwa mem -t {threads} {input.ref} {input.fwd} {input.rev} | samtools view -Sb - > {output}"
+        "time bwa mem -t {threads} {input.ref} {input.fwd} {input.rev} > {output}"
+
+rule bam_convert:
+    input:
+        sam = "data/alignments/parental_bam_temp/{sample}.sam"
+    output:
+        temp("data/alignments/parental_bam_temp/{sample}.bam")
+    shell:
+        "samtools view -Sb {input.sam} > {output}"
         
 rule bam_sort:
     input:
