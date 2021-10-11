@@ -1,17 +1,19 @@
 """
-parental alignment snakefile
+parental alignment snakefile - generates parental bams 
+for downstream variant calling (see `analysis/genotyping/variant_calling.smk`)
+
+requires:
+bwa, samtools, picard
 
 usage:
-snakemake -p \
---snakefile analysis/alignment/parental_alignment.smk \
-[rule]
-
+snakemake -pr -s analysis/alignment/parental_alignment.smk 
 """
 
 import os
 from glob import glob
 
-# globals
+# --- globals
+
 configfile: 'analysis/alignment/config.yml'
 JAVA_EXEC = config['JAVA_EXEC']
 PICARD = config['PICARD']
@@ -21,10 +23,20 @@ SAMPLES = [os.path.basename(f.rstrip('fastq.gz'))
 PREFIXES = list(set([re.search('(^[A-Z]{2}[0-9]{3,}[_590]*)_[12]', f).group(1)
     for f in SAMPLES]))
 
-# functions
+# handling CC2932 - there are two separate files
+for prefix in ['CC2932_50', 'CC2932_90']:
+    PREFIXES.remove(prefix)
+PREFIXES.append('CC2932')
+
+# --- rules
+
 rule all:
+    """
+    the final outfiles are set as the index files, not the bams themselves,
+    since indexing is the final step!
+    """
     input:
-        expand("data/alignments/parental_bam/{sample}.bam", sample=PREFIXES)
+        expand("data/alignments/parental_bam/{sample}.bam.bai", sample=PREFIXES)
 
 rule bwa_aln:
     input:
@@ -36,7 +48,6 @@ rule bwa_aln:
     threads:
         20
     shell:
-        # "time bwa mem -t {threads} {input.ref} {input.fwd} {input.rev} | samtools view -Sb - > {output}"
         "time bwa mem -t {threads} {input.ref} {input.fwd} {input.rev} > {output}"
 
 rule bam_convert:
@@ -46,6 +57,22 @@ rule bam_convert:
         temp("data/alignments/parental_bam_temp/{sample}.bam")
     shell:
         "samtools view -Sb {input.sam} > {output}"
+
+rule combine_2932:
+    """
+    the 2932 reads were generated using teh a hybrid 2x50 and 2x90 approach.
+    this rule combined the aligned reads into a single CC2932 bam
+    """
+    input:
+        file_50 = "data/alignments/parental_bam_temp/CC2932_50.bam",
+        file_90 = "data/alignments/parental_bam_temp/CC2932_90.bam"
+    output:
+        temp("data/alignments/parental_bam_temp/CC2932.bam")
+    run:
+        shell("echo {input.file_50} > temp_cat_files.txt")
+        shell("echo {input.file_90} >> temp_cat_files.txt")
+        shell("samtools cat -b temp_cat_files.txt -o {output}")
+        shell("rm -v temp_cat_files.txt")
         
 rule bam_sort:
     input:
@@ -94,9 +121,8 @@ rule bam_mark_duplicates:
 
 rule bam_idx:
     input:
-        expand("data/alignments/parental_bam/{sample}.bam", sample=PREFIXES)
-    log: 
-        "data/alignments/parental_bam/idx.log"
-    run:
-        for fname in input:
-            shell(f"samtools index {fname}")
+        "data/alignments/parental_bam/{sample}.bam"
+    output:
+        "data/alignments/parental_bam/{sample}.bam.bai"
+    shell:
+        "samtools index {input} {output}"

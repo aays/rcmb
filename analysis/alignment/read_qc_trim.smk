@@ -1,17 +1,19 @@
 """
-read qc snakefile
+read qc snakefile - for QC'ing and trimming cross reads
+
+requires:
+fastqc, trimmomatic
 
 usage:
-snakemake -p \
---snakefile analysis/alignment/read_qc_trim.smk \
-[rule]
+snakemake -pr -s analysis/alignment/read_qc_trim.smk [rule]
 
+no `rule all` - needs to be run with explicit rules at the command line
 """
 
 import os
 from glob import glob
 
-# globals
+# --- globals
 configfile: 'config.yml'
 
 SAMPLES = [os.path.basename(f.rstrip('fastq.gz'))
@@ -20,7 +22,8 @@ PREFIXES = list(set([f.split('_')[0] for f in SAMPLES]))
 TRIM_PREFIXES = [f'{p}_trim_{i}' for p in PREFIXES for i in [1, 2]]
 JAVA_EXEC = config['JAVA_EXEC']
 
-# functions
+# --- rules
+
 rule fastqc:
     input:
         expand("data/alignments/fastq/{sample}.fastq.gz", sample=SAMPLES)

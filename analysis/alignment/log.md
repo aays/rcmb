@@ -924,4 +924,17 @@ time snakemake -pr --cores 20 -s analysis/alignment/parental_alignment.smk
 it worked! done in 2 hours - I ought to create a 'sam repair' script 
 for reproducibility's sake down the line
 
+## 7/10/2021
+
+and we're back - now to fix the CC2932 issue, where the
+two bams need to be combined
+
+updated the PREFIXES variable to remove the `_50` and `_90` prefixes,
+and added a `combine_2932` rule that specifically concatenates those two
+into `CC2932.sam`
+
+```bash
+time snakemake -pr -s analysis/alignment/parental_alignment.smk --cores 20
+```
+
 

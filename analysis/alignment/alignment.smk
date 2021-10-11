@@ -1,17 +1,20 @@
 """
-alignment snakefile
+cross alignment snakefile - generates cross bams for direct
+recombination event detection
+
+requires:
+bwa, samtools, picard
 
 usage:
-snakemake -p \
---snakefile analysis/alignment/alignment.smk \
-[rule]
+snakemake -pr -s analysis/alignment/alignment.smk
 
 """
 
 import os
 from glob import glob
 
-# globals
+# --- globals
+
 configfile: 'analysis/alignment/config.yml'
 JAVA_EXEC = config['JAVA_EXEC']
 PICARD = config['PICARD']
@@ -19,10 +22,11 @@ PICARD = config['PICARD']
 with open('data/alignments/samples.txt', 'r') as f:
     SAMPLES = [sample.rstrip() for sample in f]
 
-# functions
+# --- rules
+
 rule all:
     input:
-        expand("data/alignments/bam/{sample}.bam", sample=SAMPLES)
+        expand("data/alignments/bam/{sample}.bam.bai", sample=SAMPLES)
 
 rule bwa_aln:
     input:
@@ -80,3 +84,11 @@ rule bam_mark_duplicates:
         "{JAVA_EXEC} -jar {PICARD} MarkDuplicates "
         "I={input.bam} O={output.bam_out} "
         "REMOVE_DUPLICATES=true METRICS_FILE={output.metrics}"
+
+rule bam_idx:
+    input:
+        bam = "data/alignments/bam/{sample}.bam"
+    output:
+        "data/alignments/bam/{sample}.bam.bai"
+    shell:
+        "samtools index {input.bam} {output}"
