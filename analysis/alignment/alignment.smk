@@ -26,7 +26,7 @@ with open('data/alignments/samples.txt', 'r') as f:
 
 rule all:
     input:
-        expand("data/alignments/bam/{sample}.bam.bai", sample=SAMPLES)
+        expand("data/alignments/bam_filtered/{sample}.sorted.bam", sample=SAMPLES)
 
 rule bwa_aln:
     input:
@@ -92,3 +92,14 @@ rule bam_idx:
         "data/alignments/bam/{sample}.bam.bai"
     shell:
         "samtools index {input.bam} {output}"
+
+rule readcomb_bamprep:
+    input:
+        bam = "data/alignments/bam/{sample}.bam"
+    output:
+        "data/alignments/bam_filtered/{sample}.sorted.bam"
+    threads:
+        16
+    shell:
+        "time readcomb-bamprep --bam {input.bam} "
+        "--threads {threads} --outdir data/alignments/bam_filtered/"

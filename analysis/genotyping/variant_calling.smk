@@ -4,9 +4,10 @@ use in recombination event detection
 
 follows the GATK germline short variant discovery
 pipeline (per sample calls -> consolidation -> joint genotyping)
+before filtering VCFs with readcomb-vcfprep
 
 requires:
-gatk4
+gatk4, readcomb
 
 usage:
 snakemake -pr -s analysis/genotyping/variant_calling.smk --cores [cores]
@@ -43,7 +44,7 @@ mkdir('data/genotyping/vcf')
 
 rule all:
     input:
-        expand('data/genotyping/vcf/{cross}.vcf.gz', cross=CROSSES)
+        expand('data/genotyping/vcf_filtered/{cross}.vcf.gz.tbi', cross=CROSSES)
 
 rule call_indiv_gvcf:
     """
@@ -108,4 +109,25 @@ rule genotype_gvcfs:
     shell:
         'time gatk GenotypeGVCFs -R {input.ref} '
         '-V {input.gvcf} -O {output}'
+
+rule readcomb_vcfprep:
+    input:
+        vcf_in = 'data/genotyping/vcf/{cross}.vcf.gz',
+    output:
+        'data/genotyping/vcf_filtered/{cross}.vcf.gz'
+    params:
+        min_qual = '30'
+    threads:
+        2
+    shell:
+        'time readcomb-vcfprep --vcf {input.vcf_in} '
+        '--no_hets --min_GQ {params.min_qual} --out {output}'
+
+rule vcf_tabix:
+    input:
+        vcf_in = 'data/genotyping/vcf_filtered/{cross}.vcf.gz'
+    output:
+        'data/genotyping/vcf_filtered/{cross}.vcf.gz.tbi'
+    shell:
+        'time tabix -p vcf -f {input.vcf_in}'
 

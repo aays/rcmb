@@ -181,3 +181,62 @@ time snakemake -pr -s analysis/genotyping/variant_calling.smk --cores 8
 
 took two hours and now it looks like we're in business! 
 
+## 20/10/2021
+
+revisiting this - I haven't yet run `readcomb-vcfprep` on the files - should
+add that to the workflow and get that running! 
+
+
+```bash
+mkdir data/genotyping/vcf_filtered
+
+# trying to filter a single file before adding to workflow
+# readcomb 0.0.5
+time readcomb-vcfprep \
+--vcf data/genotyping/vcf/GB119x3062.vcf.gz \
+--no_hets --min_GQ 30 \
+--out data/genotyping/vcf_filtered/GB119x3062.vcf.gz
+```
+
+looks good - retained 43% of variants (1.65m from 3.79m)
+
+updating the snakemake workflow:
+
+```bash
+# will run readcomb_vcfprep rule
+time snakemake -pr -s analysis/genotyping/variant_calling.smk --cores 8
+```
+
+done in half an hour
+
+although this reminds me I need to run bamprep as well! back to the alignment log
+
+## 2/11/2021
+
+today - finding a quebec all samples v6 VCF to use for SNP curation - with the
+idea being that if there are regions with dense het calls, these are likely
+paralogous regions we should mask/ignore when detecting phase changes (by
+filtering VCFs accordingly - so this would involve updating vcfprep down the line)
+
+found it - looks like it's in
+
+```
+/research/projects/chlamydomonas/Cincerta_deNovo/analysis/assembly_V3/misc_analyses/ \
+chlamy_v6_project/QC17_CC4532/SNP_filtering
+```
+
+there's also a `QC17_v6` VCF but I recall Rory cautioning me not to use this one, given
+that it has some manually inserted 'null' calls I likely won't want to deal with 
+
+going to symlink this into `data/references/` as `QC_v6_all.vcf.gz` as well as the unfiltered
+version in the folder above, since that may be useful in finding 'crap' regions
+
+```
+lrwxrwxrwx. 1 domain users  169 Nov  2 15:49 QC_v6_all.vcf.gz -> /research/projects/chlamydomonas/Cincerta_deNovo/analysis/assembly_V3/misc_analyses/chlamy_v6_project/QC17_CC4532/SNP_filtering/QC17_CC4532.all_sites.all_isolates.vcf.gz
+lrwxrwxrwx. 1 domain users  173 Nov  2 15:49 QC_v6_all.vcf.gz.tbi -> /research/projects/chlamydomonas/Cincerta_deNovo/analysis/assembly_V3/misc_analyses/chlamy_v6_project/QC17_CC4532/SNP_filtering/QC17_CC4532.all_sites.all_isolates.vcf.gz.tbi
+lrwxrwxrwx. 1 domain users  146 Nov  2 15:49 QC_v6_unfiltered.vcf.gz -> /research/projects/chlamydomonas/Cincerta_deNovo/analysis/assembly_V3/misc_analyses/chlamy_v6_project/QC17_CC4532/QC17_CC4532.GenotypeGVCFs.vcf.gz
+lrwxrwxrwx. 1 domain users  150 Nov  2 15:49 QC_v6_unfiltered.vcf.gz.tbi -> /research/projects/chlamydomonas/Cincerta_deNovo/analysis/assembly_V3/misc_analyses/chlamy_v6_project/QC17_CC4532/QC17_CC4532.GenotypeGVCFs.vcf.gz.tbi
+```
+
+
+

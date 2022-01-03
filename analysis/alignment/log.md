@@ -937,4 +937,74 @@ into `CC2932.sam`
 time snakemake -pr -s analysis/alignment/parental_alignment.smk --cores 20
 ```
 
+## 20/10/2021
+
+finally - time to prep bams for phase change analysis using readcomb! 
+
+testing on a single bam:
+
+```bash
+mkdir data/alignments/bam_filtered
+
+time readcomb-bamprep --bam data/alignments/bam/2343x1691.bam \
+--threads 16 --outdir data/alignments/bam_filtered/
+```
+
+took a bit of debugging but looks good - now to add this to the
+alignment workflow
+
+```bash
+# updated with readcomb_bamprep rule
+time snakemake -pr -s analysis/alignment/alignment.smk --cores 16
+```
+
+## 23/10/2021
+
+took 5 hours but files look good
+
+getting `readcomb-filter` going -
+
+```bash
+mkdir -p data/phase_changes/sam/
+mkdir -p data/phase_changes/bam/
+
+time readcomb-filter \
+--bam data/alignments/bam_filtered/2343x1691.sorted.bam \
+--vcf data/genotyping/vcf_filtered/2343x1691.vcf.gz \
+--processes 8 \
+--log filter_test.log \
+--quality 30 \
+--out data/phase_changes/bam/2343x1691.filtered.bam
+```
+
+## 25/10/2021
+
+this bugged out due to a logging error - trying again -
+ 
+```bash
+time readcomb-filter \
+--bam data/alignments/bam_filtered/2343x1691.sorted.bam \
+--vcf data/genotyping/vcf_filtered/2343x1691.vcf.gz \
+--processes 8 \
+--log filter_test.log \
+--quality 30 \
+--out data/phase_changes/sam/2343x1691.filtered.sam
+```
+
+## 26/10/2021
+
+looks good! looks like 13% of reads 'passed':
+
+```
+3565309 phase change-containing read pairs from total 26238981 read pairs
+8827201 reads had no-match variants
+8092147 reads did not have enough variants (> 0) to call
+```
+
+and this completed in 110 min given ten processes - which bodes really well
+
+time to get this workflow going - going to continue this in `analysis/phase_changes/log.md`
+(which is where I should have been in the first place)
+
+
 
