@@ -409,3 +409,79 @@ things to do once these are done:
 - are peaks consistent across samples? this could point to generally messier areas of the genome that
 have higher probabilities of false positives in the actual data
 - run filter on actual samples! 
+
+## 4/1/2022
+
+so looks like most of the files are just taking 40 min a piece - which means parental filtering
+might be done by the end of tomorrow or so
+
+for now, I've got enough 2344 samples that I could start doing some midpoint analyses for these
+'phase changes' to see if the same regions of the genome are leading to false positives across
+different MT- strains
+
+after this I should also look into why readcomb isn't correctly generating progress bars - has
+to do with the `pair_count` attribute - as well as fix up some of the bamprep stderr writing
+
+going to look at midpoints in `false_positives.ipynb`
+
+## 5/1/2022
+
+alright - the parental lines should be done overnight tonight, so I'm going
+to queue up the actual recombinants
+
+before I do - need to fix up the progress bar bug in `readcomb`
+
+```bash
+time ../readcomb/readcomb/filter.py \
+--bam data/alignments/bam_filtered/2343x1691.sorted.bam \
+--vcf data/genotyping/vcf_filtered/2343x1691.vcf.gz \
+--processes 16 --quality 30 --out data/phase_changes/sam/2343x1691.filtered.sam
+```
+
+fixed it! was an errant `bai` file check - going to push changes, recompile readcomb, and push to pip
+
+out of curiosity - I'm also going to run a parental sample with quality bumped up to 40 and see if
+that leads to any false positives
+
+```bash
+time readcomb-filter \
+--bam data/alignments/bam_filtered/GB119.sorted.bam \
+--vcf data/genotyping/vcf_filtered/GB119x3062.vcf.gz \
+--processes 12 \
+--mode phase_change \
+--quality 40 \
+--out GB119_test.sam
+```
+
+still some hundreds with GQ40, and they disappear entirely at 50 - I'm still
+going to stick to 30, but this is good to know
+
+next up - I'm going to rerun the actual samples, since I also need to do the
+mtDNA leakage quantification from those directly - also going to add a rule
+that converts the files to BAM at the end of it (why does something tell me I
+want to keep them in SAM format? I can't think of any good reasons why right
+now)
+
+```bash
+time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 16
+```
+
+## 7/1/2022
+
+fixed some weirdness in the CC1691 parental run (see `alignment` log) - here we go again:
+
+```bash
+# rerun bamprep on 1691 and start on phase change detection again
+time snakemake -pr -s analysis/phase_changes/parental_phase_changes.smk readcomb_filter --cores 16
+```
+
+apparently directly murdering that one garbage corrupted read wasn't enough! time to do it
+again I guess????? 
+
+update - all done now (see alignment log - what a nightmare) - rerunning: 
+
+```bash
+# run 2: electric boogaloo
+time snakemake -pr -s analysis/phase_changes/parental_phase_changes.smk readcomb_filter --cores 16
+```
+

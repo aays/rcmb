@@ -1006,5 +1006,101 @@ and this completed in 110 min given ten processes - which bodes really well
 time to get this workflow going - going to continue this in `analysis/phase_changes/log.md`
 (which is where I should have been in the first place)
 
+## 7/1/2022
+
+back here cause `CC1691.bam` continues to be a total jerk - this time since there
+seems to be a read in chr3 that passes all flags but has no mate (I wonder if the mate
+is that corrupted read I removed earlier?) 
+
+either way, I'm going to have to do some manual fixes to toss this read into the gutter as well - 
+from earlier, but updated:
+
+```python
+from tqdm import tqdm
+with open('data/alignments/parental_bam_temp/CC1691_fixed.sam', 'w') as f_out:
+    with open('data/alignments/parental_bam_temp/CC1691_old.sam', 'r') as f:
+        trash_read = 'SRR1797948.46982639'
+        counter = 0
+        lines = []
+        for i, line in tqdm(enumerate(f)):
+            if line.startswith('SRR') or line.startswith('@') and not trash_read in line:
+                f_out.write(line)
+            else:
+                counter += 1
+                lines.append(i)
+                lines.append(line)
+```
+
+once more, with feeling:
+
+```bash
+mv -v data/alignments/parental_bam_temp/CC1691.sam \
+data/alignments/parental_bam_temp/CC1691_old.sam
+
+mv -v data/alignments/parental_bam_temp/CC1691_fixed.sam \
+data/alignments/parental_bam_temp/CC1691.sam
+
+# will redo workflow specifically for CC1691
+time snakemake -pr --cores 20 -s analysis/alignment/parental_alignment.smk
+```
+
+and then back to the `phase_changes` log we go to generate more false positives
+
+aaaand update: the read is _still_ there - just going to remove it manually at this point,
+I don't have the goddamn brainpower to reverse engineer how it managed to stick around
+despite me removing it earlier
+
+```
+import pysam
+from tqdm import tqdm
+
+reader = pysam.AlignmentFile('data/alignments/parental_bam_filtered/CC1691.sorted.bam', 'rb')
+writer = pysam.AlignmentFile(
+    'data/alignments/parental_bam_filtered/CC1691.fixed.bam', 'wh', template=reader)
+
+total, counter = 0, 0
+for record in tqdm(reader):
+    total += 1
+    if record.reference_name == 'chromosome_03' and record.query_name == 'SRR1797948.46982639':
+        continue
+    else:
+        counter += 1
+        writer.write(record)
+# >>> counter
+# 82377392
+# >>> total
+# 82377393
+```
+
+will need to sort, recreate the index file, and then sort by read name:
+
+```bash
+# in data/alignments/parental_bam_filtered
+rm CC1691.sorted.bai # remove old index
+
+# sort for index generation
+time samtools sort -O bam -@12 -o CC1691.fixed.sorted.bam --verbosity 4 CC1691.fixed.bam
+
+# regen index
+time samtools index CC1691.fixed.sorted.bam CC1691.sorted.bai
+
+# create read name sorted file
+rm CC1691.sorted.bam # delete old version
+time samtools sort -n -O bam -@12 -o CC1691.sorted.bam CC1691.fixed.sorted.bam
+```
+
+## 10/1/2022
+
+getting some coverage stats for the methods section
+
+```python
+counts = [40066453, 26544459, 30459259, 22726219, 33717850, 51466264, 
+    22966295, 27814662, 19991410, 29707153, 30581007, 24920406, 22568234, 
+    20106348, 20172916, 26150662, 20602843, 27399502, 21516400, 19754383, 
+    18106544, 48260547, 20410697, 27177597, 33705747, 43510346, 20323566, 
+    22981901, 22980268, 28922949] # from the excel sheet
+
+sum(counts) / len(counts) # ~27m
+```
 
 
