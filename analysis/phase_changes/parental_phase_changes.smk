@@ -35,6 +35,7 @@ STRAINS['mt_plus'] = list(set(STRAINS['mt_plus']))
 STRAINS['mt_minus'] = list(set(STRAINS['mt_minus']))
 PARENTS = STRAINS['mt_plus'] + STRAINS['mt_minus']
 PARENTS = ['CC' + parent for parent in PARENTS if not parent.startswith('GB')]
+PARENTS.append('GB119')
 
 MINUS_CROSS_DICT = {}
 for mt_minus in STRAINS['mt_minus']:
@@ -102,7 +103,7 @@ rule readcomb_filter:
             for mt_plus in cross_strains:
                 cross = f'{mt_plus}x{mt_minus}'
                 if not mt_minus.startswith('GB') and not mt_minus.startswith('CC'):
-                    minus = 'CC' + minus
+                    mt_minus = 'CC' + mt_minus
                 if 'CC' in cross:
                     cross = cross.replace('CC', '') # weird CC name handling
 

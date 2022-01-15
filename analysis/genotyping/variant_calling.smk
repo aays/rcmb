@@ -94,7 +94,12 @@ rule combine_parents:
 
                 cross_name = f'{mt_plus}x{mt_minus}'
 
-                shell("gatk CombineGVCFs -R {input.ref} "
+                if os.path.exists(f'data/genotyping/gvcf_combined/{cross_name}.g.vcf.gz'):
+                    print(f'[rcmb] {cross_name}.g.vcf.gz exists. skipping...')
+                    continue
+                else:
+                    print(os.path.exists(f'data/genotyping/gvcf_combined/{cross_name}.g.vcf.gz'))
+                    shell("gatk CombineGVCFs -R {input.ref} "
                       "--variant {mt_plus_path} --variant {mt_minus_path} "
                       "-O data/genotyping/gvcf_combined/{cross_name}.g.vcf.gz")
 
@@ -116,12 +121,13 @@ rule readcomb_vcfprep:
     output:
         'data/genotyping/vcf_filtered/{cross}.vcf.gz'
     params:
-        min_qual = '30'
+        min_qual = '30',
+        purity_filter = '1'
     threads:
         2
     shell:
-        'time readcomb-vcfprep --vcf {input.vcf_in} '
-        '--no_hets --min_GQ {params.min_qual} --out {output}'
+        'time readcomb-vcfprep --vcf {input.vcf_in} --no_hets --snps_only '
+        '--min_GQ {params.min_qual} --purity_filter {params.purity_filter} --out {output}'
 
 rule vcf_tabix:
     input:
@@ -129,5 +135,5 @@ rule vcf_tabix:
     output:
         'data/genotyping/vcf_filtered/{cross}.vcf.gz.tbi'
     shell:
-        'time tabix -p vcf -f {input.vcf_in}'
+        'time tabix -p vcf {input.vcf_in}'
 

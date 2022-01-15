@@ -485,3 +485,13 @@ update - all done now (see alignment log - what a nightmare) - rerunning:
 time snakemake -pr -s analysis/phase_changes/parental_phase_changes.smk readcomb_filter --cores 16
 ```
 
+## 15/1/2022
+
+redoing run on samples now that markers have been updated (although these may be updated once more
+afterwards based on the het search) 
+
+```bash
+# redoes readcomb_filter and bam_convert for each file
+# snakemake actually detected that input files changed this time!
+time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 16
+```

@@ -238,5 +238,54 @@ lrwxrwxrwx. 1 domain users  146 Nov  2 15:49 QC_v6_unfiltered.vcf.gz -> /researc
 lrwxrwxrwx. 1 domain users  150 Nov  2 15:49 QC_v6_unfiltered.vcf.gz.tbi -> /research/projects/chlamydomonas/Cincerta_deNovo/analysis/assembly_V3/misc_analyses/chlamy_v6_project/QC17_CC4532/QC17_CC4532.GenotypeGVCFs.vcf.gz.tbi
 ```
 
+## 11/1/2022
+
+today - regenerating all VCFs that involve 1691 since that BAM was remade
+
+snakemake is being a total imbecile and refusing to detect that the CC1691 bam
+was regenerated - not sure what's going on here - so I'm going to have to run the command
+manually I suppose
+
+```bash
+time gatk HaplotypeCaller \
+-R data/references/CC4532.w_organelles_MTplus.fa \
+-I data/alignments/parental_bam/CC1691.bam \
+-ERC GVCF -ploidy 2 \
+--heterozygosity 0.02 --indel-heterozygosity 0.002 \
+--native-pair-hmm-threads 2 -O data/genotyping/gvcf_sample/CC1691.g.vcf.gz
+```
+
+## 13/1/2022
+
+alright - snakemake is still being uncooperative and not detecting that something changed -
+I'm just going to remove all the final `vcf_filtered` files that involve 1691 in some way
+into `temp_1691/` (in the project root) and get snakemake to go again
+
+for some reason it now feels the need to redo all the gvcf genotyping again, which is
+just great, but I might as well just let it do its thing since that step is quick enough
+
+also updated vcfprep to _just output SNPs_ in VCFs based on last Rob meeting, since we
+can revisit re: indels down the line - though this does mean I have to run all instances
+of readcomb (parental and regular) once more since the marker sets have changed
+
+other than this, I need to (use that combined v6 VCF to?) do allele depth scans and 
+look for regions that are potentially paralogous - alternatively, I should add a purity
+filter to `vcfprep` (which would be handy to have regardless) 
+
+found another bug too... here's a to-do list:
+
+- fix parental allele difference check - currently, if `gt_bases` is `['G|G', 'G/G']` that
+gets counted as an informative allele
+- add purity filter
+
+## 14/1/2022
+
+all done and implemented in 0.1.6 - here we go again
+
+```bash
+# redoes readcomb_vcfprep and vcf_tabix rules
+time snakemake -pr -s analysis/genotyping/variant_calling.smk --cores 8
+```
+
 
 
