@@ -495,3 +495,54 @@ afterwards based on the het search)
 # snakemake actually detected that input files changed this time!
 time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 16
 ```
+
+going to create a sorted sam to view in IGV for one of the completed ones - let's do
+2932x3062
+
+```bash
+time samtools sort -O sam data/phase_changes/bam/2932x3062.filtered.bam \
+-o data/phase_changes/sam/2932x3062.sorted.sam
+```
+
+going to download this and the corresponding VCF for use with IGV 
+
+## 19/1/2022
+
+today - things to add to readcomb:
+
+- correct indexing of reads w/ indels for query quality comparison (currently just includes deletions)
+- code that compares `detection_1` and `detection_2` between the two reads - if a variant is represented more
+than once and the calls disagree, that variant should be ignored
+
+alright - changes implemented (among some others) - testing this out before
+updating readcomb proper:
+
+```bash
+mkdir -p temp_2932 # in root
+
+# the only updates to filter have been the corrected indel quality checks
+time python ../readcomb/readcomb/filter.py \
+--bam data/alignments/bam_filtered/2932x3062.sorted.bam \
+--vcf data/genotyping/vcf_filtered/2932x3062.vcf.gz \
+--processes 16 \
+--out temp_2932/2932x3062.filtered.sam \
+--quality 30
+```
+
+and then on the parents for false positive detection:
+
+```bash
+# half processes since I'm running both overnight concurrently
+time python ../readcomb/readcomb/filter.py \
+--bam data/alignments/parental_bam_filtered/CC2932.sorted.bam \
+--vcf data/genotyping/vcf_filtered/2932x3062.vcf.gz \
+--processes 8 --quality 30 \
+--out temp_2932/2932x3062.plus.filtered.sam
+
+time python ../readcomb/readcomb/filter.py \
+--bam data/alignments/parental_bam_filtered/CC3062.sorted.bam \
+--vcf data/genotyping/vcf_filtered/2932x3062.vcf.gz \
+--processes 8 --quality 30 \
+--out temp_2932/2932x3062.minus.filtered.sam
+```
+
