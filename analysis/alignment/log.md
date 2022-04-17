@@ -1103,4 +1103,295 @@ counts = [40066453, 26544459, 30459259, 22726219, 33717850, 51466264,
 sum(counts) / len(counts) # ~27m
 ```
 
+## 20/1/2022
+
+today - trying out the HC -bamout argument to see if I can resolve
+sketchy paralogous regions
+
+let's try this with 2932x3062 since that's been the guinea pig cross for
+a bit now
+
+going to run this on CC2932 alone to start with - otherwise maintaining the same parameters
+
+```bash
+mkdir -p data/hc_test
+
+time gatk --java-options "-Xmx4g" HaplotypeCaller \
+-R data/references/CC4532.w_organelles_MTplus.fa \
+-I data/alignments/parental_bam/CC2932.bam \
+-O data/hc_test/CC2932.vcf.gz \
+-bamout data/hc_test/CC2932.bamout.bam \
+-L chromosome_01 -ploidy 2 --heterozygosity 0.02 \
+--indel-heterozygosity 0.002
+# took 1 hr
+```
+
+I haven't set the -ERC to GVCF since I don't really care about the VCF here
+
+seems the bamout file only has 2036779 'non HC' reads, far fewer than the original bam -
+the reconstructed haplotypes are kept as 'HC' reads
+
+making an HC-read only version for IGV:
+
+```python
+import pysam
+from tqdm import tqdm
+
+reader = pysam.AlignmentFile('data/hc_test/CC2932.bamout.bam', 'rb')
+writer = pysam.AlignmentFile('data/hc_test/CC2932.hc_only.sam', 'wh', template=reader)
+
+for record in tqdm(reader):
+    if record.query_name.startswith('HC'):
+        writer.write(record)
+
+# and then compress and samtools index the output sam
+```
+
+## 12/4/2022
+
+the day has finally come - 2 x 250 bp for all the parents! 
+
+going to clear out the old parental bams, since I don't need these anymore.
+for now - 
+
+```bash
+# in data/alignments
+mkdir parental_old
+mv -v parental_* parental_old/
+```
+
+and now to download the files - going to have details on Notion
+
+```bash
+# downloaded to /scratch/projects/chlamydomonas/recombination/other_stuff
+# in that dir:
+mv -v *xCC* ../fastq # two recombinant samples - 3071x2931 and 3071x3062
+mv -v *CC* ../parental_fastq # the rest of the samples 
+mv -v *GB119* ../parental_fastq # and the one GB sample
+```
+
+comparing checksums - need to download to local machine and then transfer to server
+
+```bash
+# in parental_fastq
+time md5sum -c readSets.md5
+```
+
+this will raise some issues given that I've moved some of the files over to `other_stuff` - 
+will check those separately
+
+current samples look good -
+
+```
+NS.1843.002.IDT_i7_13---IDT_i5_13.CC2931_R1.fastq.gz: OK
+NS.1843.002.IDT_i7_13---IDT_i5_13.CC2931_R2.fastq.gz: OK
+NS.1843.002.IDT_i7_1---IDT_i5_1.CC2344_R1.fastq.gz: OK
+NS.1843.002.IDT_i7_1---IDT_i5_1.CC2344_R2.fastq.gz: OK
+NS.1843.002.IDT_i7_181---IDT_i5_181.CC2935_R1.fastq.gz: OK
+NS.1843.002.IDT_i7_181---IDT_i5_181.CC2935_R2.fastq.gz: OK
+NS.1843.002.IDT_i7_109---IDT_i5_109.CC1952_R1.fastq.gz: OK
+NS.1843.002.IDT_i7_109---IDT_i5_109.CC1952_R2.fastq.gz: OK
+NS.1843.002.IDT_i7_98---IDT_i5_98.CC3059_R1.fastq.gz: OK
+NS.1843.002.IDT_i7_98---IDT_i5_98.CC3059_R2.fastq.gz: OK
+NS.1843.002.IDT_i7_133---IDT_i5_133.CC2343_R1.fastq.gz: OK
+NS.1843.002.IDT_i7_133---IDT_i5_133.CC2343_R2.fastq.gz: OK
+NS.1843.002.IDT_i7_121---IDT_i5_121.CC2342_R1.fastq.gz: OK
+NS.1843.002.IDT_i7_121---IDT_i5_121.CC2342_R2.fastq.gz: OK
+NS.1843.002.IDT_i7_169---IDT_i5_169.CC2932_R1.fastq.gz: OK
+NS.1843.002.IDT_i7_169---IDT_i5_169.CC2932_R2.fastq.gz: OK
+NS.1843.002.IDT_i7_97---IDT_i5_97.CC1691_R1.fastq.gz: OK
+NS.1843.002.IDT_i7_97---IDT_i5_97.CC1691_R2.fastq.gz: OK
+NS.1843.002.IDT_i7_122---IDT_i5_122.CC3071_R1.fastq.gz: OK
+NS.1843.002.IDT_i7_122---IDT_i5_122.CC3071_R2.fastq.gz: OK
+NS.1843.002.IDT_i7_134---IDT_i5_134.CC3086_R1.fastq.gz: OK
+NS.1843.002.IDT_i7_134---IDT_i5_134.CC3086_R2.fastq.gz: OK
+NS.1843.002.IDT_i7_110---IDT_i5_110.CC3062_R1.fastq.gz: OK
+NS.1843.002.IDT_i7_110---IDT_i5_110.CC3062_R2.fastq.gz: OK
+NS.1843.002.IDT_i7_146---IDT_i5_146.GB119_R1.fastq.gz: OK
+NS.1843.002.IDT_i7_146---IDT_i5_146.GB119_R2.fastq.gz: OK
+```
+
+going to make a copy in `../fastq` just for those two recombinant samples that have
+since been added:
+
+```bash
+cp -v readSums.md5 ../fastq
+cd ../fastq
+time md5sum -c readSets.md5
+```
+
+also looks good! 
+
+```
+NS.1843.002.IDT_i7_158---IDT_i5_158.CC3071xCC2931_R1.fastq.gz: OK
+NS.1843.002.IDT_i7_158---IDT_i5_158.CC3071xCC2931_R2.fastq.gz: OK
+NS.1843.002.IDT_i7_170---IDT_i5_170.CC3071xCC3062_R1.fastq.gz: OK
+NS.1843.002.IDT_i7_170---IDT_i5_170.CC3071xCC3062_R2.fastq.gz: OK
+```
+
+time to symlink and then rename said symlinks to something simpler
+
+```bash
+# in data/alignments/fastq
+ln -sv /scratch/projects/chlamydomonas/recombination/fastq/NS.1843* .
+
+# then renamed symlinks to follow prev format - not going to do python, just four files
+```
+
+QC and trimming is next - this should be straightforward for the parents, but
+not the recombinants. `read_qc_trim.smk` wasn't written with outputs explicitly
+specified, or even a rule all - I'm just going to keep this simple and run the
+commands directly with a temp bash script for the recombinants, but otherwise
+use the existing parental read qc snakefile (with minor adjustments, since the other
+had some edge case corrections) for the parents
+
+let's also symlink the parents while we're at it
+
+```bash
+# in data/alignments/parental_fastq
+ln -sv /scratch/projects/chlamydomonas/recombination/parental_fastq/NS*fastq.gz .
+```
+
+and renaming these in Python, as before - o
+
+```python
+import os
+import re
+import glob
+
+fname_list = glob.glob('*R?.fastq.gz')
+
+pattern = '[CCGB]{2}[0-9]{3,4}_R[12].fastq.gz'
+for fname in fname_list:
+    new_fname = re.search(pattern, fname).group()
+    os.rename(fname, new_fname)
+```
+
+tomorrow - run a bash script to QC the two new recombinant sequences, and then
+update + run the parental fastq QC workflow as well
+
+## 13/4/2022
+
+QCing the recombinant sequences first - 
+
+```bash
+# take 25 min each
+time fastqc --kmers 7 --outdir data/alignments/fastq/fastqc/raw \
+data/alignments/fastq/3071x2931_R*.fastq.gz
+
+time fastqc --kmers 7 --outdir data/alignments/fastq/fastqc/raw \
+data/alignments/fastq/3071x3062_R*.fastq.gz
+```
+
+unzipping the fastqc files:
+
+```bash
+unzip data/alignments/fastq/fastqc/raw/3071x2931_R1_fastqc.zip \
+-d data/alignments/fastq/fastqc
+unzip data/alignments/fastq/fastqc/raw/3071x2931_R2_fastqc.zip \
+-d data/alignments/fastq/fastqc
+
+unzip data/alignments/fastq/fastqc/raw/3071x3062_R1_fastqc.zip \
+-d data/alignments/fastq/fastqc
+unzip data/alignments/fastq/fastqc/raw/3071x3062_R2_fastqc.zip \
+-d data/alignments/fastq/fastqc
+```
+
+checking for failed tests:
+
+```bash
+cd data/alignments/fastq/fastqc
+grep -P 'FAIL\t' 3071*/summary.txt
+```
+
+only GC content + adapter content issues - let's get a move on then and trim
+
+```bash
+for prefix in 3071x3062 3071x2931; do
+    time trimmomatic PE -threads 16 -phred33 \
+    data/alignments/fastq/${prefix}_R1.fastq.gz \
+    data/alignments/fastq/${prefix}_R2.fastq.gz \
+    data/alignments/fastq_trim/${prefix}_trim_1.fq.gz \
+    data/alignments/fastq_trim/${prefix}_trim_unpaired_1.fq.gz \
+    data/alignments/fastq_trim/${prefix}_trim_2.fq.gz \
+    data/alignments/fastq_trim/${prefix}_trim_unpaired_2.fq.gz \
+    ILLUMINACLIP:bin/NEBNext_dual.fasta:2:30:10 \
+    SLIDINGWINDOW:4:20
+done
+```
+    
+## 14/4/2022
+
+fastqc'ing the trimmed reads - 
+    
+```bash
+time fastqc --kmers 7 --outdir data/alignments/fastq_trim/fastqc/raw \
+data/alignments/fastq_trim/3071x2931_trim_*.fq.gz
+
+time fastqc --kmers 7 --outdir data/alignments/fastq_trim/fastqc/raw \
+data/alignments/fastq_trim/3071x3062_trim_*.fq.gz
+
+# whoops - this did paired ones as well - will just remove those
+```
+
+unzipping - 
+
+```bash
+unzip data/alignments/fastq_trim/fastqc/raw/3071x2931_trim_1_fastqc.zip \
+-d data/alignments/fastq_trim/fastqc
+unzip data/alignments/fastq_trim/fastqc/raw/3071x2931_trim_2_fastqc.zip \
+-d data/alignments/fastq_trim/fastqc
+
+unzip data/alignments/fastq_trim/fastqc/raw/3071x2931_trim_1_fastqc.zip \
+-d data/alignments/fastq_trim/fastqc
+unzip data/alignments/fastq_trim/fastqc/raw/3071x2931_trim_2_fastqc.zip \
+-d data/alignments/fastq_trim/fastqc
+```
+
+checking with grep command above - nothing but GC content issues in 3071 x 2931, as expected
+
+and now for alignment! just manually updating `data/alignments/samples.txt` with the added two
+
+```bash
+time snakemake -pr -s analysis/alignment/alignment.smk --cores 16
+```
+
+while this is running: getting the parental QC workflow going
+
+```bash
+time snakemake -pr -s analysis/alignment/parental_fastq_qc.smk fastqc # took 2 hrs
+time snakemake -pr -s analysis/alignment/parental_fastq_qc.smk unzip_fastqc
+```
+
+seems all the failures are GC content + adapter content - as expected
+
+trimming:
+
+```bash
+time snakemake -pr -s analysis/alignment/parental_fastq_qc.smk --cores 16 trim_reads
+```
+
+## 15/4/2022
+
+done in 4 hrs - now to fastqc the trimmed reads:
+
+```bash
+time snakemake -pr -s analysis/alignment/parental_fastq_qc.smk fastqc_trim
+```
+
+fastqc results look good - had to add ILLUMINACLIP to the trimmomatic command but otherwise
+things were in the clear
+
+time for alignment! 
+
+```bash
+time snakemake -pr -s analysis/alignment/parental_alignment.smk --cores 20
+# took 16 hours
+```
+
+back to genotyping! 
+
+
+
+
 

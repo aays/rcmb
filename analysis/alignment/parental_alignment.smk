@@ -20,13 +20,9 @@ PICARD = config['PICARD']
 
 SAMPLES = [os.path.basename(f.rstrip('fastq.gz'))
     for f in glob('data/alignments/parental_fastq/*.fastq.gz')]
-PREFIXES = list(set([re.search('(^[A-Z]{2}[0-9]{3,}[_590]*)_[12]', f).group(1)
+PREFIXES = list(set([re.search('[A-Z]{2}[0-9]{3,4}', f).group(0)
     for f in SAMPLES]))
 
-# handling CC2932 - there are two separate files
-for prefix in ['CC2932_50', 'CC2932_90']:
-    PREFIXES.remove(prefix)
-PREFIXES.append('CC2932')
 
 # --- rules
 
@@ -58,22 +54,6 @@ rule bam_convert:
     shell:
         "samtools view -Sb {input.sam} > {output}"
 
-rule combine_2932:
-    """
-    the 2932 reads were generated using teh a hybrid 2x50 and 2x90 approach.
-    this rule combined the aligned reads into a single CC2932 bam
-    """
-    input:
-        file_50 = "data/alignments/parental_bam_temp/CC2932_50.bam",
-        file_90 = "data/alignments/parental_bam_temp/CC2932_90.bam"
-    output:
-        temp("data/alignments/parental_bam_temp/CC2932.bam")
-    run:
-        shell("echo {input.file_50} > temp_cat_files.txt")
-        shell("echo {input.file_90} >> temp_cat_files.txt")
-        shell("samtools cat -b temp_cat_files.txt -o {output}")
-        shell("rm -v temp_cat_files.txt")
-        
 rule bam_sort:
     input:
         bam = "data/alignments/parental_bam_temp/{sample}.bam"

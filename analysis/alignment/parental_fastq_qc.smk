@@ -5,7 +5,7 @@ requires:
 fastqc, trimmomatic
 
 usage:
-snakemake -pr -s analysis/alignment/parental_fastq_qc.smk [rul]
+snakemake -pr -s analysis/alignment/parental_fastq_qc.smk [rule]
 
 no `rule all` - needs to be run with explicit rules at the command line
 """
@@ -20,7 +20,7 @@ configfile: 'analysis/alignment/config.yml'
 
 SAMPLES = [os.path.basename(f.rstrip('fastq.gz'))
     for f in glob('data/alignments/parental_fastq/*.fastq.gz')]
-PREFIXES = list(set([re.search('(^[A-Z]{2}[0-9]{3,}[_590]*)_[12]', f).group(1)
+PREFIXES = list(set([re.search('[A-Z]{2}[0-9]{3,4}', f).group(0)
     for f in SAMPLES]))
 TRIM_PREFIXES = [f'{p}_trim_{i}' for p in PREFIXES for i in [1,2]]
 
@@ -53,13 +53,14 @@ rule trim_reads:
     run:
         for prefix in PREFIXES:
             shell('trimmomatic PE -threads {threads} -phred33 '
-                  'data/alignments/parental_fastq/{prefix}_1.fastq.gz '
-                  'data/alignments/parental_fastq/{prefix}_2.fastq.gz '
+                  'data/alignments/parental_fastq/{prefix}_R1.fastq.gz '
+                  'data/alignments/parental_fastq/{prefix}_R2.fastq.gz '
                   'data/alignments/parental_fastq_trim/{prefix}_trim_1.fq.gz '
                   'data/alignments/parental_fastq_trim/{prefix}_trim_unpaired_1.fq.gz '
                   'data/alignments/parental_fastq_trim/{prefix}_trim_2.fq.gz '
                   'data/alignments/parental_fastq_trim/{prefix}_trim_unpaired_2.fq.gz '
-                  'SLIDINGWINDOW:5:30 LEADING:5 TRAILING:5 2>> {log}')
+                  'ILLUMINACLIP:bin/NEBNext_dual.fasta:2:30:10 '
+                  'SLIDINGWINDOW:4:20 LEADING:5 TRAILING:5 2>> {log}')
 
 rule fastqc_trim:
     input:
