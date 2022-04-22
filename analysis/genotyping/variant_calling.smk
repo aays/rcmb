@@ -18,6 +18,12 @@ from glob import glob
 
 # --- globals
 
+SAMPLES = list(set([
+    os.path.basename(fname.rstrip('.bam'))
+    for fname in glob('data/alignments/parental_bam/*')
+    if fname.endswith('.bam')]
+))
+
 with open('data/genotyping/samples.txt', 'r') as f:
     CROSSES = [line.split(' ')[0] for line in f]
     CROSS_DICT = {}
@@ -44,6 +50,7 @@ mkdir('data/genotyping/vcf')
 
 rule all:
     input:
+        expand('data/genotyping/gvcf_sample/{sample}.g.vcf.gz', sample=SAMPLES),
         expand('data/genotyping/vcf_filtered/{cross}.vcf.gz.tbi', cross=CROSSES)
 
 rule call_indiv_gvcf:
@@ -75,6 +82,7 @@ rule combine_parents:
     but at the same time CC *was* a part of the GVCF names
     """
     input:
+        expand('data/genotyping/gvcf_sample/{sample}.g.vcf.gz', sample=SAMPLES),
         ref = 'data/references/CC4532.w_organelles_MTplus.fa'
     output:
         expand('data/genotyping/gvcf_combined/{cross}.g.vcf.gz', cross=CROSSES)
@@ -121,7 +129,7 @@ rule readcomb_vcfprep:
     output:
         'data/genotyping/vcf_filtered/{cross}.vcf.gz'
     params:
-        min_qual = '30',
+        min_qual = '20',
         purity_filter = '1'
     threads:
         2

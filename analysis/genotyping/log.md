@@ -287,5 +287,29 @@ all done and implemented in 0.1.6 - here we go again
 time snakemake -pr -s analysis/genotyping/variant_calling.smk --cores 8
 ```
 
+## 30/1/2022
+
+regenerating VCFs with GQ dropped to 20:
+
+```bash
+mv -v data/genotyping/vcf_filtered data/genotyping/vcf_filtered_30 # will delete afterwards
+
+mkdir -p data/genotyping/vcf_filtered
+time snakemake -pr -s analysis/genotyping/variant_calling.smk --cores 8
+# min qual 20, purity filter 1
+```
+
+## 17/4/2022
+
+redoing with new parental data:
+
+```bash
+time snakemake -pr -s analysis/genotyping/variant_calling.smk --cores 8
+```
+
+## 22/4/2022
+
+took 4 whole days! onto the `phase_changes` log
+
 
 
