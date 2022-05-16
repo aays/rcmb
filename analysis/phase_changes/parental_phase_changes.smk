@@ -49,29 +49,31 @@ def mkdir(dir_path):
     else:
         print(f'[rcmb] {dir_path} exists')
 
-mkdir('data/alignments/parental_bam_filtered')
+mkdir('data/alignments/parental_bam_prepped')
 mkdir('data/phase_changes/parental')
 
 # --- rules
 
 rule all:
     input:
-        expand('data/alignments/parental_bam_filtered/{parent}.sorted.bam', parent=PARENTS)
+        expand('data/phase_changes/parental/{cross}.filtered.sam', cross=PARENT_CROSSES),
 
 rule readcomb_bamprep:
     input:
         bam = "data/alignments/parental_bam/{parent}.bam"
     output:
-        "data/alignments/parental_bam_filtered/{parent}.sorted.bam"
+        "data/alignments/parental_bam_prepped/{parent}.sorted.bam"
     threads:
         16
     shell:
         "time readcomb-bamprep --bam {input.bam} "
-        "--threads {threads} --outdir data/alignments/parental_bam_filtered/"
+        "--threads {threads} --outdir data/alignments/parental_bam_prepped/"
 
 rule readcomb_filter:
     input:
-        expand('data/alignments/parental_bam_filtered/{parent}.sorted.bam', parent=PARENTS)
+        expand('data/alignments/parental_bam_prepped/{parent}.sorted.bam', parent=PARENTS)
+    output:
+        expand('data/phase_changes/parental/{cross}.filtered.bam', cross=PARENT_CROSSES),
     threads:
         16
     params:
@@ -93,7 +95,7 @@ rule readcomb_filter:
                     continue
 
                 shell(
-                    'time readcomb-filter --bam data/alignments/parental_bam_filtered/{mt_plus}.sorted.bam '
+                    'time readcomb-filter --bam data/alignments/parental_bam_prepped/{mt_plus}.sorted.bam '
                     '--vcf data/genotyping/vcf_filtered/{cross}.vcf.gz ' 
                     '--processes {threads} --log {params.log} '
                     '--quality {params.min_qual} '
@@ -113,7 +115,7 @@ rule readcomb_filter:
                     continue
 
                 shell(
-                    'time readcomb-filter --bam data/alignments/parental_bam_filtered/{mt_minus}.sorted.bam '
+                    'time readcomb-filter --bam data/alignments/parental_bam_prepped/{mt_minus}.sorted.bam '
                     '--vcf data/genotyping/vcf_filtered/{cross}.vcf.gz '
                     '--processes {threads} --log {params.log} '
                     '--quality {params.min_qual} '

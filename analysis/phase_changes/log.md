@@ -1176,6 +1176,238 @@ samtools sort -O bam -o 2344x1952.chr1.COs.bam 2344x1952.chr1.COs.sam
 samtools index 2344x1952.chr1.COs.bam
 ```
 
+## 22/4/2022
+
+alright new parental sequences just dropped, fire emoji 100 emoji
+
+now that variant calling is done, trying out one sample:
+
+```bash
+mkdir new_test
+
+time readcomb-filter \
+--bam data/alignments/bam_filtered/2344x2931.sorted.bam \
+--vcf data/genotyping/vcf_filtered/2344x2931.vcf.gz \
+--min_mapq 40 --processes 16 --quality 30 --out new_test/2344x2931.filtered.sam
+```
+
+C-c'd out of it around 4 min in, after 1.3m pairs had been processed
+
+```bash
+# in new_test - get first 2000 read pairs
+head -n 2070 2344x2931.filtered.sam > 2344x2931.sam
+rm 2344x2931.filtered.sam
+mv -v 2344x2931.sam 2344x2931.filtered.sam
+
+# prep for viewing in IGV
+samtools sort -O bam -o 2344x2931.filtered.bam 2344x2931.filtered.sam
+samtools index 2344x2931.filtered.bam
+```
+
+separately pulling up IGV - but let's get a list of crossovers first:
+
+```python
+import readcomb.classification as rc
+from tqdm import tqdm
+import pysam
+
+bam_fname = 'new_test/2344x2931.filtered.sam'
+vcf_fname = 'data/genotyping/vcf_filtered/2344x2931.vcf.gz'
+
+reader = rc.pairs_creation(bam_fname, vcf_fname)
+
+cos = []
+for pair in tqdm(reader):
+    pair.classify(masking=0)
+    if pair.min_variants_in_haplotype and pair.call == 'cross_over':
+        if pair.min_variants_in_haplotype > 1:
+            cos.append(pair)
+            if len(cos) == 10:
+                break
+```
+
+to incorporate:
+- set numerical values in classification.Pair to -1 by default, not None
+- add an indel proximity thing to crossovers as well - proximity to midpoint basically
+- most importantly - add a 'proximity to end of read' thing for CO breakpoints 
+    - should explain some false positives
+
+but first - going to get the parental false positives workflow going - after that, will also 
+need to incorporate some stuff to filter out recombination events that have actually been
+caused by het calls
+
+in the meantime - getting the parental phase changes going:
+
+```bash
+time snakemake -pr -s analysis/phase_changes/parental_phase_changes.smk --cores 16
+```
+
+## 24/4/2022
+
+today:
+
+- look at parental phase change counts, out of curiosity
+- up the quality filters (eg min variants in haplotype) and find 'better' calls
+- debug the weird div by zero error that's happening in `mismatch_variant_ratio`
+- plan out lab meeting presentation 
+
+re parental phase changes - they're currently sorted by read name, but how do I
+want to handle these? it may be better to have them sorted by position if I want
+to create lookups - but having them by read name lets me ID problematic conversion tracts
+and misleading variants
+
+I could also use these to filter VCFs directly - need to talk to Rob about this one
+
+meanwhile - it seems that upping the min variants in haplotype filter to 3 just means
+finding more false positives. the common threads seem to be:
+
+- very short haplotype tract for one of the two parents
+- two read types in the parents
+
+wait - I forgot to update the snakefile to actually do more than just readcomb-bamprep...
+
+```bash
+time snakemake -pr -s analysis/phase_changes/parental_phase_changes.smk --cores 16
+# should also readcomb-filter
+```
+
+## 27/4/2022
+
+so there's been some movement on changing up the genotyping workflow - need to
+finalize switching over to freebayes, but in the meantime, I need to figure out
+how to create a lookup for false positives in the parental read sets
+
+basically - if a phase change is called on a parental read, we know that that phase change
+is 'a lie' - and we want to filter out any supposed recombinant reads with that same phase change
+
+here's an example:
+
+```python
+>>> false_pair.detection
+[('2', 3424823, 'C'), ('2', 3424875, 'C'), ('1', 3425013, 'T'), 
+('1', 3425020, 'G'), ('1', 3425025, 'T'), ('2', 3425054, 'A'), 
+('2', 3425089, 'C'), ('2', 3425105, 'A'), ('2', 3425123, 'A'), 
+('2', 3425148, 'C'), ('2', 3425188, 'G'), ('2', 3425205, 'T'), 
+('2', 3425223, 'T'), ('2', 3425242, 'A'), ('2', 3425244, 'A')]
+
+>>> cos[2].detection
+[('1', 3425013, 'T'), ('1', 3425020, 'G'), ('1', 3425025, 'T'), 
+('2', 3425089, 'C'), ('2', 3425105, 'A'), ('2', 3425123, 'A'), 
+('2', 3425148, 'C'), ('2', 3425188, 'G'), ('2', 3425205, 'T'), 
+('2', 3425223, 'T'), ('2', 3425242, 'A'), ('2', 3425244, 'A'), 
+('2', 3425281, 'T'), ('2', 3425328, 'G'), ('2', 3425367, 'G'),
+('2', 3425371, 'G'), ('2', 3425410, 'G'), ('2', 3425434, 'G'), 
+('2', 3425445, 'A'), ('2', 3425449, 'T')]
+```
+
+where `cos[2]` is the detection output for a false phase change, while
+`false_pair` is the equivalent parental read that has that false event
+
+thought: could use tabix and create bed intervals with phase changes! 
+
+so something like 
+
+```
+left_bound right_bound left_parent right_parent
+3424875 3425013 2 1 
+3425025 3425054 1 2
+```
+
+that could then be checked against each individual read! 
+
+## 3/5/2022
+
+today - implementing this in a new readcomb tool called `false_positives`
+
+should take in -
+
+1. readcomb output for a given cross
+2. readcomb output on plus parent bam
+3. readcomb output on minus parent bam
+4. which filtering method to use (midpoint/overlap/nuclear)
+5. bed files of false positives (if appropriate)
+6. log file
+7. file to write to
+
+## 12/5/2022
+
+day 5 of covid right now but I think I got it done! let's
+give it a go - first, would need to run readcomb filter on parents,
+and then generate bed files
+
+```bash
+python ../readcomb/readcomb/false_positives.py \
+--fname freebayes-test/2344x2931.filtered.sam \
+--false_plus freebayes-test/2344x2931.plus.FP.sam \ # ran readcomb-filter on parent files for these
+--false_minus freebayes-test/2344x2931.minus.FP.sam \
+--vcf freebayes-test/2344x2931.prepped.vcf.gz \
+--method midpoint \
+--false_bed_out 2344x2931.test.bed \
+--out freebayes-test/2344x2931.fpd.sam
+```
+
+## 14/5/2022
+
+alright, this script has now been debugged after several hours and runs just fine on the 
+three filter modes - also logs things now too
+
+time to regen the parental false positive sams with the new VCFs and then it's off to the races
+
+```bash
+time snakemake -pr -s analysis/phase_changes/parental_phase_changes.smk --cores 16
+# regens filtered sams in data/phase_changes/parental/
+```
+
+## 15/5/2022
+
+done in a day - now to get a workflow going to filter out the false positives 
+
+I should first look at some of the filtered reads returned in `freebayes-test` though
+to see which of the three methods I want to use
+
+## 16/5/2022
+
+some notes from yesterday:
+
+- there's still a bug in midpoint calculation that I've since fixed (the
+start parameter in relative midpoint calc was incorrect)
+- midpoint calculation is wrong for gene conversions - needs to be between the focal variants 
+
+now that both of these are fixed, going to create a giant data frame of calls to look at
+
+```python
+import csv
+import readcomb.classification as rc
+from tqdm import tqdm
+
+# picking midpoint bc there was one false GC filtered in midpoint but not overlap
+bam_fname = 'freebayes-test/fpd/2344x2931.fpd.midpoint.sam'
+vcf_fname = 'data/genotyping/vcf_filtered/2344x2931.vcf.gz'
+reader = rc.pairs_creation(bam_fname, vcf_fname)
+
+fieldnames = [
+    'chromosome', 'midpoint', 'rel_midpoint', 'call', 'masked_call', 'mask_size', 'min_vars_in_hap', 
+    'var_skew', 'mismatch_var_ratio', 'var_per_hap', 'gc_length', 'read_name']
+
+with open('freebayes-test/2344x2931.overlap.tsv', 'w', newline='') as f:
+    writer = csv.DictWriter(f, delimiter='\t', fieldnames=fieldnames)
+    writer.writeheader()
+
+    for pair in tqdm(reader):
+        pair.classify(masking=20)
+        writer.writerow({
+            'chromosome': pair.rec_1.reference_name,
+            'midpoint': pair.midpoint,
+            'rel_midpoint': pair.relative_midpoint,
+            'call': pair.call, 'masked_call': pair.masked_call,
+            'mask_size': 20, 'min_vars_in_hap': pair.min_variants_in_haplotype,
+            'var_skew': pair.variant_skew, 'mismatch_var_ratio': pair.mismatch_variant_ratio,
+            'var_per_hap': pair.variants_per_haplotype, 'gc_length': pair.gene_conversion_len,
+            'read_name': pair.rec_1.query_name})
+```
+     
+    
+
 
 
 
