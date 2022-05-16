@@ -65,7 +65,7 @@ rule bam_read_groups:
     input:
         bam = "data/alignments/bam_temp/{sample}.fixMate.bam"
     output:
-        "data/alignments/bam_temp/{sample}.RG.bam"
+        temp("data/alignments/bam_temp/{sample}.RG.bam")
     run:
         sample_name = os.path.basename(input.bam).rstrip('fixMate.RG.bam')
         shell("{JAVA_EXEC} -jar {PICARD} AddOrReplaceReadGroups "
@@ -97,9 +97,9 @@ rule readcomb_bamprep:
     input:
         bam = "data/alignments/bam/{sample}.bam"
     output:
-        "data/alignments/bam_filtered/{sample}.sorted.bam"
+        "data/alignments/bam_prepped/{sample}.sorted.bam"
     threads:
         16
     shell:
         "time readcomb-bamprep --bam {input.bam} "
-        "--threads {threads} --outdir data/alignments/bam_filtered/"
+        "--threads {threads} --outdir data/alignments/bam_prepped/"

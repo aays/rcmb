@@ -311,5 +311,202 @@ time snakemake -pr -s analysis/genotyping/variant_calling.smk --cores 8
 
 took 4 whole days! onto the `phase_changes` log
 
+## 24/4/2022
+
+so a lot of these calls are absolute misleading trash and although I have `filter`
+running on the parents right now to help filter paralogs, I think I'm going to give
+freebayes a go as well just to see if that produces better call sets
+
+installing freebayes:
+
+```bash
+conda install -c bioconda freebayes
+```
+
+giving it a go with 2344 x 2931:
+
+```bash
+mkdir -p freebayes-test
+
+freebayes \
+-f data/references/CC4532.w_organelles_MTplus.fa \
+--theta 0.02 \
+--ploidy 2 \
+-r chromosome_01 \
+data/alignments/parental_bam/CC2344.bam \
+data/alignments/parental_bam/CC2931.bam > \
+freebayes-test/2344x2931.vcf
+
+bgzip freebayes-test/2344x2931.vcf
+tabix freebayes-test/2344x2931.vcf.gz
+
+bcftools filter -i 'TYPE="snp"' freebayes-test/2344x2931.vcf.gz > freebayes-test/2344x2931.snps.vcf
+bgzip freebayes-test/2344x2931.vcf
+tabix freebayes-test/2344x2931.vcf.gz
+
+```
+
+after this is done, going to use the already filtered reads with `rc.classification` but
+with the freebayes vcf loaded in - this way I can also programmatically ignore anything
+that's not on chromosome 1 (since that's all I have going right now)
+
+here goes:
+
+```python
+import readcomb.classification as rc
+from tqdm import tqdm
+
+bam_fname = 'data/alignments/bam_filtered/2344x2931.sorted.bam'
+vcf_fname = 'freebayes-test/2344x2931.vcf.gz'
+
+reader = rc.pairs_creation(bam_fname, vcf_fname)
+
+cos = []
+for pair in tqdm(reader):
+    if pair.rec_1.reference_name == 'chromosome_01':
+        pair.classify(masking=0)
+        if pair.call == 'cross_over':
+            cos.append(pair)
+        if len(cos) == 10:
+            break
+
+```
+
+this called the bonked read correctly! let's get it going across the full genome -
+I should do this for one sample and see how it goes before parallelizing and running
+on the entire set of crosses
+
+I should put in a lot of threads for the 2344x2931 run just to have something to possibly
+present tomorrow, after which I'll write a snakemake workflow for the other samples
+if all looks promising
+
+doing this in parallel over the chromosomes -
+
+```bash
+parallel -j4 'freebayes \
+-f data/references/CC4532.w_organelles_MTplus.fa \
+--theta 0.02 \
+--ploidy 2 \
+-r chromosome_{} \
+data/alignments/parental_bam/CC2344.bam \
+data/alignments/parental_bam/CC2931.bam > \
+freebayes-test/2344x2931.chr_{}.vcf
+' ::: 02 03 04 05 06 07 08 09 {10..17}
+```
+
+these are taking 30-50 min per chrom - after they're done, going to
+concatenate and bgzip them + create a SNP only version
+
+```bash
+# in freebayes-test
+bcftools concat 2344x2931.chr??.vcf > 2344x2931.vcf
+bgzip 2344x2931.vcf
+tabix 2344x2931.vcf.gz
+
+bcftools filter -i 'TYPE="snp"' 2344x2931.vcf.gz > 2344x2931.snps.vcf
+bgzip 2344x2931.snps.vcf
+tabix 2344x2931.snps.vcf.gz
+
+# remove chr specific files
+rm -v *chr*
+
+# vcfprep file - still in same dir
+time readcomb-vcfprep --vcf 2344x2931.snps.vcf.gz --no_hets --snps_only \
+--min_GQ 0 --purity_filter -1 --out 2344x2931.prepped.vcf.gz
+# major current limitation - freebayes doesn't report GQ like GATK does - uses QUAL scores instead
+# purity filter also needs to be disabled since it currently pulls allele specific depths from raw rec
+# which assumes GATK output appearance
+
+# filtering by QUAL instead and then redoing - 
+bcftools filter -i 'TYPE="snp" & QUAL>=20' 2344x2931.vcf.gz > 2344x2931.snps.vcf
+# redo bgzip + tabix and then remove hets - 
+time readcomb-vcfprep --vcf 2344x2931.snps.vcf.gz --no_hets --snps_only \
+--min_GQ -1 --purity_filter -1 --out 2344x2931.prepped.vcf.gz
+```
+
+and now trying readcomb-filter - though this really should be in `phase_changes`...
+
+```bash
+time readcomb-filter --bam data/alignments/bam_filtered/2344x2931.sorted.bam \
+--vcf freebayes-test/2344x2931.prepped.vcf.gz \
+--processes 8 \
+--quality 30 \ # base qual, not variant call
+--out freebayes-test/2344x2931.filtered.sam
+```
+
+## 25/4/2022
+
+done in an hour overnight - prepping for IGV viewing and then off we go:
+
+```bash
+samtools sort -O bam -o 2344x2931.filtered.sorted.bam 2344x2931.filtered.sam
+samtools index 2344x2931.filtered.sorted.bam
+```
+
+just going to add parental false positive files to check against:
+
+```bash
+time readcomb-filter --bam data/alignments/parental_bam_filtered/CC2344.sorted.bam \
+--vcf freebayes-test/2344x2931.prepped.vcf.gz \
+--processes 16 \
+--quality 30 \ # base qual, not variant call
+--out freebayes-test/2344x2931.plus.FP.sam
+
+time readcomb-filter --bam data/alignments/parental_bam_filtered/CC2931.sorted.bam \
+--vcf freebayes-test/2344x2931.prepped.vcf.gz \
+--processes 16 \
+--quality 30 \ # base qual, not variant call
+--out freebayes-test/2344x2931.minus.FP.sam
+
+# and then the usual sort + index - in the freebayes folder
+samtools sort -O bam -o 2344x2931.plus.FP.bam 2344x2931.plus.FP.sam
+samtools index 2344x2931.plus.FP.bam
+samtools sort -O bam -o 2344x2931.minus.FP.bam 2344x2931.minus.FP.sam
+samtools index 2344x2931.minus.FP.bam
+
+# also redoing the above but with the *unfiltered* VCF - this preserves het calls
+```
+
+## 27/4/2022
+
+I think this arg should mean GQs are also calculated:
+
+```bash
+freebayes \
+-f data/references/CC4532.w_organelles_MTplus.fa \
+--theta 0.02 \
+--ploidy 2 \
+-r chromosome_01 \
+--genotype-qualities \
+data/alignments/parental_bam/CC2344.bam \
+data/alignments/parental_bam/CC2931.bam > \
+freebayes_gq_test.vcf
+```
+
+## 29/4/2022
+
+and finally, let's figure out this purity filter - changed the code up a bit, here goes:
+
+```bash
+# in readcomb dir
+python vcfprep.py --vcf ../../rcmb/freebayes_gq_test.vcf.gz \
+--snps_only --no_hets --min_GQ 30 --purity_filter 1 --out ../../rcmb/filt_test.vcf
+```
+
+looks good - now to update the variant calling workflow to use freebayes instead
+
+this will take a bit of work since I want to parallelize it over chromosomes + organelles
+
+## 1/5/2022
+
+getting the workflow going:
+
+```bash
+time snakemake -pr -s analysis/genotyping/freebayes_variant_calling.smk --cores 6
+# creates chrom specific VCFs in data/genotyping/vcf_chrom and concats them into data/genotyping/vcf_freebayes
+```
+
+
+
 
 
