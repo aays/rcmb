@@ -135,10 +135,8 @@ rule readcomb_vcfprep:
     output:
         'data/genotyping/vcf_filtered/{cross}.vcf.gz'
     params:
-        min_qual = '20',
+        min_qual = '30',
         purity_filter = '1'
-    threads:
-        2
     shell:
         'time readcomb-vcfprep --vcf {input.vcf_in} --no_hets --snps_only '
         '--min_GQ {params.min_qual} --purity_filter {params.purity_filter} --out {output}'

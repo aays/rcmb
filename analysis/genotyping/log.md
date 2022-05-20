@@ -506,6 +506,15 @@ time snakemake -pr -s analysis/genotyping/freebayes_variant_calling.smk --cores 
 # creates chrom specific VCFs in data/genotyping/vcf_chrom and concats them into data/genotyping/vcf_freebayes
 ```
 
+## 18/5/2022
+
+redoing the final step of the workflow after fixing the purity filter in vcfprep:
+
+```bash
+# after clearing out vcf_filtered
+time snakemake -pr -s analysis/genotyping/freebayes_variant_calling.smk --cores 6
+```
+
 
 
 
