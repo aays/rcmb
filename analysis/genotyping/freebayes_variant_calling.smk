@@ -58,7 +58,7 @@ mkdir('data/genotyping/vcf_filtered')
 
 rule all:
     input:
-        # expand('data/genotyping/vcf_chrom/{cross}.{chrom}.vcf', cross=CROSSES, chrom=CHROMS),
+        expand('data/genotyping/vcf_chrom/{cross}.{chrom}.vcf.gz', cross=CROSSES, chrom=CHROMS),
         expand('data/genotyping/vcf_freebayes/{cross}.vcf.gz', cross=CROSSES),
         expand('data/genotyping/vcf_filtered/{cross}.vcf.gz.tbi', cross=CROSSES)
 

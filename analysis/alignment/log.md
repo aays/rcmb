@@ -1391,6 +1391,209 @@ time snakemake -pr -s analysis/alignment/parental_alignment.smk --cores 20
 
 back to genotyping! 
 
+## 22/5/2022
+
+out of curiosity - going to get some MAPQ summaries for each parental bam -
+
+```python
+>>> import pysam
+>>> from tqdm import tqdm
+>>> reader = pysam.AlignmentFile('data/alignments/parental_bam/CC3071.bam')
+>>> scores = {}
+>>> counter = 0
+>>> for record in tqdm(reader):
+...     if not record.mapq in scores:
+...         scores[record.mapq] = 1
+...     elif record.mapq in scores:
+...         scores[record.mapq] += 1
+...     counter += 1
+...     if counter > 2e7:
+...         break
+19950904it [00:39, 522635.42it/s]
+>>> reader = pysam.AlignmentFile('data/alignments/parental_bam/CC2342.bam')
+>>> scores_2 = {}
+>>> counter = 0
+>>> for record in tqdm(reader):
+...     if not record.mapq in scores_2:
+...         scores_2[record.mapq] = 1
+...     elif record.mapq in scores_2:
+...         scores_2[record.mapq] += 1
+...     counter += 1
+...     if counter > 2e7:
+...         break
+18781262it [00:37, 496688.30it/s]
+>>> for score in sorted(scores.keys()):
+...     print(score, scores[score], scores_2[score])
+0 2816164 3863909
+1 33472 48701
+2 28164 42281
+3 36705 52358
+4 28782 41085
+5 27143 40919
+6 35883 47273
+7 27464 37593
+8 17051 26817
+9 29504 43105
+10 13854 21906
+11 12455 18584
+12 17297 26711
+13 15548 23354
+14 11672 17869
+15 21498 33397
+16 16495 21904
+17 18646 25813
+18 22831 29790
+19 25337 31995
+20 25028 29419
+21 29536 42220
+22 35491 39408
+23 24906 30424
+24 35506 42967
+25 43219 52995
+26 10272 16331
+27 67501 68798
+28 11641 18015
+29 10721 15797
+30 18168 25232
+31 12903 20215
+32 10129 15908
+33 21079 32236
+34 10088 14716
+35 11446 15373
+36 13489 20942
+37 14344 19135
+38 9170 13377
+39 22332 31654
+40 272289 250652
+41 22863 22834
+42 25434 30585
+43 28114 32579
+44 36071 37621
+45 37939 50594
+46 67623 54689
+47 23400 29798
+48 20213 27772
+49 21162 24691
+50 16836 21496
+51 17747 23179
+52 24100 30448
+53 17194 25207
+54 27204 32437
+55 20718 27768
+56 24702 32149
+57 40952 45138
+58 54486 35229
+59 24442 31858
+60 15483578 12854012
+```
+
+it seems the majority of reads are in fact MAPQ 60 - which is curious given
+some of these extremely scuffed regions I'm seeing in 3071x2931, which has
+a ridiculous amount of phase changes to the point where I don't believe a single one
+
+doesn't seem like filtering reads below MAPQ 60 actually has a huge impact
+on things:
+
+```bash
+$ head -n 1 3071.filt.cov.txt
+#rname  startpos        endpos  numreads        covbases        coverage        meandepth       meanbaseq       meanmapq
+
+hasans11@hpcnode1 /research/projects/chlamydomonas/genomewide_recombination/rcmb/data/alignments/parental_bam (work)
+$ grep 'chromosome' 3071*txt
+3071.cov.txt:chromosome_01      1       8225636 2152772 7920016 96.2845 53.6853 35.9    47.6
+3071.cov.txt:chromosome_02      1       8655884 2092944 8383456 96.8527 50.2713 35.9    53.8
+3071.cov.txt:chromosome_03      1       9286894 2237802 8842474 95.2145 49.6341 35.9    51.8
+3071.cov.txt:chromosome_04      1       4130073 972317  3801761 92.0507 44.2681 35.9    49.3
+3071.cov.txt:chromosome_05      1       3682160 895837  3341851 90.7579 46.5652 35.9    47.5
+3071.cov.txt:chromosome_06      1       8913359 2028879 8219514 92.2157 46.3422 35.9    52
+3071.cov.txt:chromosome_07      1       6492107 1602165 6240800 96.129  50.211  35.9    51.7
+3071.cov.txt:chromosome_08      1       4526983 1252945 4207986 92.9534 55.1016 35.9    42.3
+3071.cov.txt:chromosome_09      1       6807148 1561383 6229905 91.52   45.3559 35.9    49.9
+3071.cov.txt:chromosome_10      1       6800247 1633219 6488750 95.4193 49.4355 35.9    51.9
+3071.cov.txt:chromosome_11      1       4479522 1021650 4039110 90.1683 43.4616 35.9    50.6
+3071.cov.txt:chromosome_12      1       9952739 2377667 9469546 95.1451 49.8073 35.9    51.6
+3071.cov.txt:chromosome_13      1       5281438 1281443 4944631 93.6228 47.1286 35.9    49.7
+3071.cov.txt:chromosome_14      1       4217303 1337111 3912525 92.7732 64.2766 35.9    37
+3071.cov.txt:chromosome_15      1       5870643 964759  3844905 65.4938 30.4157 35.9    36.1
+3071.cov.txt:chromosome_16      1       8042475 1936949 7648358 95.0996 49.0719 35.9    51.6
+3071.cov.txt:chromosome_17      1       6954842 1613978 6513782 93.6582 46.7952 35.9    51.8
+3071.filt.cov.txt:chromosome_01 1       8225636 1604084 7111782 86.4587 42.0856 35.9    60
+3071.filt.cov.txt:chromosome_02 1       8655884 1809139 7841319 90.5895 45.5451 35.9    60
+3071.filt.cov.txt:chromosome_03 1       9286894 1843850 8035583 86.5261 42.9557 35.9    60
+3071.filt.cov.txt:chromosome_04 1       4130073 742668  3268206 79.1319 36.4288 35.9    60
+3071.filt.cov.txt:chromosome_05 1       3682160 644095  2879544 78.2026 36.0736 35.9    60
+3071.filt.cov.txt:chromosome_06 1       8913359 1666484 7337316 82.3182 40.088  35.9    60
+3071.filt.cov.txt:chromosome_07 1       6492107 1303905 5739641 88.4095 43.0413 35.9    60
+3071.filt.cov.txt:chromosome_08 1       4526983 821377  3740530 82.6274 37.4909 35.9    60
+3071.filt.cov.txt:chromosome_09 1       6807148 1216424 5435904 79.8558 37.6205 35.9    60
+3071.filt.cov.txt:chromosome_10 1       6800247 1348341 5914958 86.9815 42.8646 35.9    60
+3071.filt.cov.txt:chromosome_11 1       4479522 802308  3542483 79.0817 36.6408 35.9    60
+3071.filt.cov.txt:chromosome_12 1       9952739 1938320 8460427 85.006  42.4393 35.9    60
+3071.filt.cov.txt:chromosome_13 1       5281438 1005289 4359335 82.5407 39.8962 35.9    60
+3071.filt.cov.txt:chromosome_14 1       4217303 756509  3443964 81.6627 37.0256 35.9    60
+3071.filt.cov.txt:chromosome_15 1       5870643 471082  2187177 37.2562 15.9642 35.9    60
+3071.filt.cov.txt:chromosome_16 1       8042475 1573595 6879314 85.5373 42.1232 35.9    60
+3071.filt.cov.txt:chromosome_17 1       6954842 1313633 5822915 83.7246 40.2566 35.9    60
+```
+
+as a test, I'm going to create filtered versions of 3071 and 2931 and specifically redo
+the phase change filtering for that cross
+
+going to also do the same for 2344 and 2931 to see if that has any impact - since 2344x2931
+seems to have a reasonable set of phase changes while 3071x2931 is straight from the bowels
+of hell currently
+
+will do these tests in a new temp dir called `mapq_test`
+
+```bash
+mkdir mapq_test
+
+samtools view -O bam -q 60 data/alignments/parental_bam/CC3071.bam > mapq_test/CC3071.60.bam
+samtools view -O bam -q 60 data/alignments/parental_bam/CC2931.bam > mapq_test/CC2931.60.bam
+samtools view -O bam -q 60 data/alignments/parental_bam/CC2344.bam > mapq_test/CC2344.60.bam
+
+# in mapq_test
+for fname in *bam; do samtools index ${fname}; done
+
+# this should technically be in genotyping/ but what the hell
+parallel -j5 'time freebayes -f data/references/CC4532.w_organelles_MTplus.fa \
+--theta 0.02 --ploidy 2 --genotype-qualities -r chromosome_{} \
+mapq_test/CC3071.60.bam mapq_test/CC2931.60.bam > mapq_test/3071x2931.chr{}.vcf
+' ::: {01..09} {10..17}
+
+parallel -j2 'time freebayes -f data/references/CC4532.w_organelles_MTplus.fa \
+--theta 0.02 --ploidy 2 --genotype-qualities -r {} \
+mapq_test/CC3071.60.bam mapq_test/CC2931.60.bam > mapq_test/3071x2931.{}.vcf
+' ::: mtDNA cpDNA
+```
+
+## 23/5/2022
+
+ran overnight - now to concat these files
+
+
+```
+# in mapq_test
+for fname in *vcf; do bgzip ${fname}; tabix ${fname}.gz; done
+bcftools concat 3071x2931.*.vcf.gz > 3071x2931.vcf
+bgzip 3071x2931.vcf
+tabix 3071x2931.vcf.gz
+```
+
+hold on - I looked at the original 3071 file (from a prev study) and
+it explains a lot of these weird calls - the 2 x 250 bp 3071 has a ton
+of strange new variants that are causing false recombination calls
+
+I'm going to check and see whether 3086 has a similar thing going, and if so,
+going to redo variant calling with the older 3071 and 3086 before redoing
+phase change detection for both as well
+
+back to the `genotyping` log
+
+
+
+
+
 
 
 

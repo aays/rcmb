@@ -515,6 +515,88 @@ redoing the final step of the workflow after fixing the purity filter in vcfprep
 time snakemake -pr -s analysis/genotyping/freebayes_variant_calling.smk --cores 6
 ```
 
+## 22/5/2022
+
+going to try and call a VCF in haploid mode to see how it differs
+
+3071x2931 looks like a horrid, messy cross - let's see if a haploid VCF changes anything
+
+```bash
+mkdir haploid_test
+
+time freebayes \
+-f data/references/CC4532.w_organelles_MTplus.fa \
+--theta 0.02 \
+--ploidy 1 \
+--genotype-qualities \
+data/alignments/parental_bam/CC3071.bam \
+data/alignments/parental_bam/CC2931.bam > \
+haploid_test/3071x2931.vcf
+
+bgzip haploid_test/3071x2931.vcf
+tabix haploid_test/3071x2931.vcf.gz
+
+time readcomb-vcfprep \
+--vcf haploid_test/3071x2931.vcf.gz \
+--snps_only \
+--min_GQ 30 \
+--out haploid_test/3071x2931.prepped.vcf.gz
+```
+
+## 23/5/2022
+
+keeping that on hold for a second since it seems the issue stems from the
+new 3071 and 3086 bams 
+
+going to move the 2 x 250 ones to a separate folder (`data/alignments/bam_weird`),
+move the older ones back from `data/alignments/parental_old`, and rerun the freebayes
+variant calling workflow
+
+getting this going now:
+
+```bash
+# in data/genotyping
+mkdir vcf_weird
+mv -v vcf_filtered/3071* vcf_weird
+mv -v vcf_filtered/3086* vcf_weird
+rm -v vcf_chrom/3071*
+rm -v vcf_chrom/3086*
+
+# back to root
+time snakemake -pr -s analysis/genotyping/freebayes_variant_calling.smk --cores 6
+```
+
+and off we go to the `phase_changes` log
+
+## 25/5/2022
+
+back to the haploid test - going to bgzip, tabix, and vcfprep the vcf and then compare
+
+```
+bgzip haploid_test/3071x2931.vcf
+tabix haploid_test/3071x2931.vcf.gz
+
+time readcomb-vcfprep \
+--vcf haploid_test/3071x2931.vcf.gz \
+--snps_only \
+--min_GQ 30 \
+--out haploid_test/3071x2931.prepped.vcf
+```
+
+comparing the absolute count of records:
+
+```bash
+zcat data/genotyping/vcf_filtered/3071x2931.vcf.gz | wc -l # 1658565
+zcat haploid_test/3071x2931.prepped.vcf.gz | wc -l # 664058
+```
+
+lots more retained in the haploid version! but I jus realized this is also
+likely bc the haploid version was generated with the bonked 3071 file...
+
+
+
+
+
 
 
 
