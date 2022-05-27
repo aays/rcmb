@@ -1386,27 +1386,108 @@ vcf_fname = 'data/genotyping/vcf_filtered/2344x2931.vcf.gz'
 reader = rc.pairs_creation(bam_fname, vcf_fname)
 
 fieldnames = [
-    'chromosome', 'midpoint', 'rel_midpoint', 'call', 'masked_call', 'mask_size', 'min_vars_in_hap', 
-    'var_skew', 'mismatch_var_ratio', 'var_per_hap', 'gc_length', 'read_name']
+    'chromosome', 'midpoint', 'rel_midpoint', 'call', 'masked_call', 'mask_size', 'var_count', 
+    'min_vars_in_hap', 'var_skew', 'mismatch_var_ratio', 'var_per_hap', 'gc_length', 
+    'indel_proximity', 'detection', 'read_name']
 
-with open('freebayes-test/2344x2931.overlap.tsv', 'w', newline='') as f:
+with open('freebayes-test/2344x2931.midpoint.tsv', 'w', newline='') as f:
     writer = csv.DictWriter(f, delimiter='\t', fieldnames=fieldnames)
     writer.writeheader()
 
     for pair in tqdm(reader):
         pair.classify(masking=20)
         writer.writerow({
-            'chromosome': pair.rec_1.reference_name,
-            'midpoint': pair.midpoint,
-            'rel_midpoint': pair.relative_midpoint,
-            'call': pair.call, 'masked_call': pair.masked_call,
-            'mask_size': 20, 'min_vars_in_hap': pair.min_variants_in_haplotype,
+            'chromosome': pair.rec_1.reference_name, 'midpoint': pair.midpoint,
+            'rel_midpoint': pair.relative_midpoint, 'call': pair.call, 'masked_call': pair.masked_call,
+            'mask_size': 20, 'var_count': len(pair.variants_filt),
+            'min_vars_in_hap': pair.min_variants_in_haplotype,
             'var_skew': pair.variant_skew, 'mismatch_var_ratio': pair.mismatch_variant_ratio,
             'var_per_hap': pair.variants_per_haplotype, 'gc_length': pair.gene_conversion_len,
-            'read_name': pair.rec_1.query_name})
+            'indel_proximity': pair.indel_proximity,
+            'detection': pair.detection, 'read_name': pair.rec_1.query_name})
 ```
      
-    
+## 17/5/2022
+
+today - running readcomb-filter on all crosses and then employing midpoint filtering on all
+
+updating `phase_change_detection.smk` to do both `readcomb-filter` and `readcomb-fp`
+in one go - will also generate sorted bams separately for IGV viewing as necessary
+
+here goes:
+
+```bash
+# readcomb-filter, readcomb-fp, and bam creation
+time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 16
+```
+
+## 19/5/2022
+
+now that readcomb filter has output a few files, going to make equivalent data
+frames for some of these other crosses and look at crossovers + gene conversions:
+
+making a dir in `data/phase_changes` called `event_summaries` - I should
+maybe update the phase change snakemake workflow with this at the tail end
+at some point - perhaps with a script attached
+
+```python
+import csv
+import readcomb.classification as rc
+from tqdm import tqdm
+
+# picking midpoint bc there was one false GC filtered in midpoint but not overlap
+bam_fname = 'data/phase_changes/sam/2343x1952.filtered.sam'
+vcf_fname = 'data/genotyping/vcf_filtered/2343x1952.vcf.gz'
+reader = rc.pairs_creation(bam_fname, vcf_fname)
+
+fieldnames = [
+    'chromosome', 'midpoint', 'rel_midpoint', 'call', 'masked_call', 'mask_size', 'var_count', 
+    'min_vars_in_hap', 'var_skew', 'mismatch_var_ratio', 'var_per_hap', 'gc_length', 
+    'indel_proximity', 'detection', 'read_name']
+
+with open('data/phase_changes/event_summaries/2343x1952.midpoint.tsv', 'w', newline='') as f:
+    writer = csv.DictWriter(f, delimiter='\t', fieldnames=fieldnames)
+    writer.writeheader()
+
+    for pair in tqdm(reader):
+        pair.classify(masking=50)
+        writer.writerow({
+            'chromosome': pair.rec_1.reference_name, 'midpoint': pair.midpoint,
+            'rel_midpoint': pair.relative_midpoint, 'call': pair.call, 'masked_call': pair.masked_call,
+            'mask_size': 50, 'var_count': len(pair.variants_filt),
+            'min_vars_in_hap': pair.min_variants_in_haplotype,
+            'var_skew': pair.variant_skew, 'mismatch_var_ratio': pair.mismatch_variant_ratio,
+            'var_per_hap': pair.variants_per_haplotype, 'gc_length': pair.gene_conversion_len,
+            'indel_proximity': pair.indel_proximity,
+            'detection': pair.detection, 'read_name': pair.rec_1.query_name})
+```
+
+## 24/5/2022
+
+today - continuing to diagnose what's weird with 3071 and 3086 (see alignment
+and genotyping logs) 
+
+I've regen'd the VCFs using older 2 x 150 bp sequences - now to rerun the
+parental false positive file workflow and then the phase change workflow 
+
+```bash
+mkdir data/phase_changes/parental_weird
+mv -v data/phase_changes/parental/3071* data/phase_changes/parental_weird
+mv -v data/phase_changes/parental/3086* data/phase_changes/parental_weird
+
+time snakemake -pr -s analysis/phase_changes/parental_phase_changes.smk --cores 4
+```
+
+## 26/5/2022
+
+looks like the 3071 file switch dramatically dropped the number of recombination
+events to something that looks a lot more normal - which is good
+
+let's create a set of quality crossovers for each - going
+to create a simple filtering script since I anticipate re-running this often
+
+actually - I should do this in R instead - that way I should be able to plot and
+query things more easily as well
 
 
 

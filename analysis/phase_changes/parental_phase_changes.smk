@@ -73,7 +73,7 @@ rule readcomb_filter:
     input:
         expand('data/alignments/parental_bam_prepped/{parent}.sorted.bam', parent=PARENTS)
     output:
-        expand('data/phase_changes/parental/{cross}.filtered.bam', cross=PARENT_CROSSES),
+        expand('data/phase_changes/parental/{cross}.filtered.sam', cross=PARENT_CROSSES),
     threads:
         16
     params:
