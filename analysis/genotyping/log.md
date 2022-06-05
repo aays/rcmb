@@ -590,8 +590,167 @@ zcat data/genotyping/vcf_filtered/3071x2931.vcf.gz | wc -l # 1658565
 zcat haploid_test/3071x2931.prepped.vcf.gz | wc -l # 664058
 ```
 
-lots more retained in the haploid version! but I jus realized this is also
+lots more retained in the haploid version! but I just realized this is also
 likely bc the haploid version was generated with the bonked 3071 file...
+
+## 27/5/2022
+
+today - finding ways to increase the variant throughput - currently have
+1m-1.5m variants per file, where we'd hope to have >2m 
+
+trying to figure out freebayes' complex alleles stuff - I think
+the `-haplotype-length` argument handles this
+
+```bash
+time freebayes \
+-f data/references/CC4532.w_organelles_MTplus.fa \
+--theta 0.02 \
+--ploidy 2 \
+--genotype-qualities \
+--max-complex-gap 1 \
+--haplotype-length 1 \
+-r chromosome_01 \
+data/alignments/parental_bam/CC3071.bam \
+data/alignments/parental_bam/CC2931.bam > \
+3071x2931.no_complex.vcf
+```
+
+C-c'd out of this about 10 seconds in - going to eye the variants up top
+
+it looks like this did fix it! 
+
+comparing the variant counts against the previous one:
+
+```bash
+zgrep -c 'chromosome_01' data/genotyping/vcf_freebayes/3071x2931.vcf.gz # 297195
+grep -c 'chromosome_01' 3071x2931.no_complex.vcf # 337963
+```
+
+let's see how the values differ after vcfprepping:
+
+```bash
+bgzip 3071x2931.no_complex.vcf
+tabix -p vcf 3071x2931.no_complex.vcf.gz
+
+time readcomb-vcfprep \
+--vcf haploid_test/3071x2931.vcf.gz \
+--snps_only \
+--min_GQ 30 \
+--out haploid_test/3071x2931.prepped.vcf # retained 62244 variants
+
+zgrep -c 'chromosome_01' data/genotyping/vcf_filtered/3071x2931.vcf.gz # 49761
+
+# redoing vcfprep above but with GQ20 yields 73367
+```
+
+after eyeballing a bunch of GQ20 calls - I think this is a reasonable threshold
+
+time to genotype once more! 
+
+updated the workflow to include the `--max-complex-gap` and `--haplotype-length`
+arguments, both set to 1 - also upped the threads to 12
+
+```bash
+time snakemake -pr -s analysis/genotyping/freebayes_variant_calling.smk --cores 12
+# took 29 hours
+```
+
+back to the phase changes log! 
+
+## 31/5/2022
+
+looks like I still allowed MNPs in...
+
+need to use `vcfallelicprimitives` for this
+
+```bash
+mamba install -c bioconda vcflib
+```
+
+```bash
+time freebayes \
+-f data/references/CC4532.w_organelles_MTplus.fa \
+--theta 0.02 \
+--ploidy 2 \
+--genotype-qualities \
+--max-complex-gap 1 \
+--haplotype-length 1 \
+-r chromosome_06:1860928-1861263 \
+data/alignments/parental_bam/CC2343.bam \
+data/alignments/parental_bam/CC1691.bam > \
+test.mnp.vcf
+
+vcfallelicprimitives -kg test.mnp.vcf > test.mnp.split.vcf
+```
+
+so _this_ actually fixes it... unbelievable
+
+fortunately I don't have to fully call the VCFs from scratch, since this
+operates on files that have been called already - I'll just start 
+from the `bcftools concat` step in the workflow
+
+added a new rule called `split_mnps` - going to clear out the `vcf_freebayes` dir
+to proc this again
+
+```bash
+time snakemake -pr -s analysis/genotyping/freebayes_variant_calling.smk --cores 6
+```
+
+## 1/6/2022
+
+all done in 6 hours
+
+going to quickly test the impact of `bcftools snpgap` before heading
+back to phase change detection
+
+```bash
+# trying this on all the GB119 crosses in data/genotyping/vcf_freebayes
+for fname in GB119*vcf.gz; do
+    echo ${fname}
+    bcftools index --nrecords ${fname};
+done
+
+GB119x1691.vcf.gz
+3410401
+GB119x1952.vcf.gz
+5790816
+GB119x2342.vcf.gz
+5647080
+GB119x2935.vcf.gz
+4547893
+GB119x3062.vcf.gz
+4511139
+
+# trying bcftools filter out
+bcftools filter --snpgap 3 GB119x1691.vcf.gz
+
+for fname in GB119*vcf.gz; do
+    echo ${fname}
+    bcftools filter --SnpGap 3 ${fname} | wc -l
+done
+
+GB119x1691.vcf.gz
+3221665
+GB119x1952.vcf.gz
+5327115
+GB119x2342.vcf.gz
+5199004
+GB119x2935.vcf.gz
+4215225
+GB119x3062.vcf.gz
+4182103
+```
+
+alright - here goes again:
+
+```bash
+time snakemake -pr -s analysis/genotyping/freebayes_variant_calling.smk --cores 8
+```
+
+done in just an hour - back to the phase change log
+
+
+
 
 
 

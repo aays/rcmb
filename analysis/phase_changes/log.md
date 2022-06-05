@@ -1489,6 +1489,53 @@ to create a simple filtering script since I anticipate re-running this often
 actually - I should do this in R instead - that way I should be able to plot and
 query things more easily as well
 
+## 29/5/2022
+
+alright, redid some variant calls (see genotyping log) - now to remake
+the false positives and get phase changes for each sample
+
+```bash
+rm -v data/phase_changes/parental/*sam
+time snakemake -pr -s analysis/phase_changes/parental_phase_changes.smk --cores 16
+# should take about ~22 hours
+```
+
+## 30/5/2022
+
+and now for the phase change runs:
+
+```bash
+time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 16
+```
+
+## 1/6/2022
+
+the more things change...
+
+the VCFs have been re-regenerated - now for `readcomb-fp` and the phase change runs
+(again)
+
+```bash
+rm -v data/phase_changes/parental/*sam
+time snakemake -pr -s analysis/phase_changes/parental_phase_changes.smk --cores 16
+```
+
+## 3/6/2022
+
+and now for phase changes... again
+
+```bash
+time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 20
+```
+
+this is looking quite slow so far, likely since there are so many more new variants...
+
+took 34 hours in total - would have taken 21 days on a single core! 
+back to RStudio to get some sample reads out
+
+
+
+
 
 
 

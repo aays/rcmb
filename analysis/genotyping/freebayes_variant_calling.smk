@@ -58,7 +58,7 @@ mkdir('data/genotyping/vcf_filtered')
 
 rule all:
     input:
-        expand('data/genotyping/vcf_chrom/{cross}.{chrom}.vcf.gz', cross=CROSSES, chrom=CHROMS),
+        # expand('data/genotyping/vcf_chrom/{cross}.{chrom}.vcf.gz', cross=CROSSES, chrom=CHROMS),
         expand('data/genotyping/vcf_freebayes/{cross}.vcf.gz', cross=CROSSES),
         expand('data/genotyping/vcf_filtered/{cross}.vcf.gz.tbi', cross=CROSSES)
 
@@ -68,7 +68,7 @@ rule freebayes_chrom:
     output:
         expand('data/genotyping/vcf_chrom/{cross}.{chrom}.vcf', cross=CROSSES, chrom=CHROMS)
     threads:
-        6
+        12
     params:
         ploidy = '2'
     run:
@@ -86,6 +86,7 @@ rule freebayes_chrom:
                     "parallel -j {threads} "
                     "'freebayes -f {input.ref} --theta 0.02 --ploidy {params.ploidy} "
                     "-r chromosome_{{}} --genotype-qualities "
+                    "--max-complex-gap 1 --haplotype-length 1 "
                     "{mt_plus} {mt_minus} > data/genotyping/vcf_chrom/{cross}.chromosome_{{}}.vcf'"
                     " ::: {{01..09}} {{10..17}}"
                 )
@@ -94,6 +95,7 @@ rule freebayes_chrom:
                     "parallel -j {threads} "
                     "'freebayes -f {input.ref} --theta 0.02 --ploidy {params.ploidy} "
                     "-r {{}} --genotype-qualities "
+                    "--max-complex-gap 1 --haplotype-length 1 "
                     "{mt_plus} {mt_minus} > data/genotyping/vcf_chrom/{cross}.{{}}.vcf'"
                     " ::: mtDNA cpDNA"
                 )
@@ -113,16 +115,36 @@ rule vcf_concat:
     input:
         vcf_in = temp(lambda wildcards: CONCAT_DICT[wildcards.cross])
     output:
-        vcf_out = 'data/genotyping/vcf_freebayes/{cross}.vcf'
+        vcf_out = temp('data/genotyping/vcf_freebayes/{cross}.concat.vcf')
     threads:
-        6
+        8
     shell:
         "bcftools concat {input.vcf_in} > {output.vcf_out}"
+
+rule split_mnps:
+    input:
+        vcf_in = 'data/genotyping/vcf_freebayes/{cross}.concat.vcf'
+    output:
+        vcf_out = 'data/genotyping/vcf_freebayes/{cross}.mnp.split.vcf'
+    threads:
+        8
+    shell:
+        "vcfallelicprimitives -g {input.vcf_in} > {output.vcf_out}"
+
+rule bcftools_snpgap:
+    input:
+        vcf_in = 'data/genotyping/vcf_freebayes/{cross}.mnp.split.vcf'
+    output:
+        vcf_out = 'data/genotyping/vcf_freebayes/{cross, [GB0-9x]+}.vcf'
+    threads:
+        8
+    shell:
+        "bcftools filter --SnpGap 3:indel {input.vcf_in} > {output.vcf_out}"
 
 
 rule bgzip_tabix_combined:
     input:
-        vcf = 'data/genotyping/vcf_freebayes/{cross}.vcf'
+        vcf = 'data/genotyping/vcf_freebayes/{cross, [GB0-9x]+}.vcf'
     output:
         'data/genotyping/vcf_freebayes/{cross}.vcf.gz'
     shell:
@@ -135,8 +157,8 @@ rule readcomb_vcfprep:
     output:
         'data/genotyping/vcf_filtered/{cross}.vcf.gz'
     params:
-        min_qual = '30',
-        purity_filter = '1'
+        min_qual = '20',
+        purity_filter = '-1'
     shell:
         'time readcomb-vcfprep --vcf {input.vcf_in} --no_hets --snps_only '
         '--min_GQ {params.min_qual} --purity_filter {params.purity_filter} --out {output}'
