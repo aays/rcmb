@@ -1,0 +1,445 @@
+---
+title: "Crossovers"
+author: Ahmed Hasan
+output: html_notebook
+---
+
+# Package import
+
+```{r}
+library(tidyverse)
+library(fs)
+library(here)
+```
+
+# Data import
+
+```{r}
+fnames = dir_ls(here('data/phase_changes/nuclear/event_summaries_mapq'))
+
+d_all = map(
+  fnames,
+  ~ read_tsv(., col_types = cols()) %>% 
+    filter(masked_call == 'cross_over') %>% 
+    mutate(
+      indel_proximity = as.numeric(
+        ifelse(indel_proximity == 'N/A', Inf, indel_proximity)
+      )
+    )
+)
+
+names(d_all) = str_extract(fnames, '[GB0-9]{4,5}x[0-9]{4}')
+```
+
+# Summary stats
+
+1. How many events are there?
+2. How many combinations of call + masked call are there?
+3. How many events passing quality thresholds are there?
+
+```{r}
+# total events
+d_all %>% 
+  map_dfr(
+    ~ filter(., call == 'cross_over') %>% 
+      nrow(.)
+  ) %>% 
+  pivot_longer(
+    cols = everything(),
+    names_to = 'cross',
+    values_to = 'count') %>% 
+  arrange(desc(count))
+
+ggplot(aes(x = count)) +
+  geom_histogram()
+```
+
+```{r}
+# combinations of call and masked call
+d_all %>% 
+  map_dfr(
+    ~ count(., call, masked_call),
+    .id = 'cross'
+  ) %>% 
+  arrange(desc(n)) %>% 
+  View()
+
+# does the number of reads scale by the level of overlap in reads?
+# calc overlap in reads
+```
+
+```{r}
+rcmb_expected = read_tsv(
+  here('rcmb-expected.tsv'),
+  col_types = cols()
+)
+
+# number of events passing qual thresholds
+rcmb_qual = d_all %>% 
+  map_dfr(
+    ~ filter(.,
+      call == 'cross_over',
+      min_vars_in_hap >= 1, mismatch_var_ratio <= 1.5,
+      # rel_midpoint >= 0.2, rel_midpoint <= 0.8,
+      read1_length >= 150, read2_length >= 150, effective_length >= 200,
+      indel_proximity >= 5) %>% 
+      nrow()
+  ) %>% 
+  pivot_longer(
+    cols = everything(),
+    names_to = 'cross',
+    values_to = 'count') %>% 
+  arrange(desc(count)) %>% 
+  mutate(s = sum(count))
+  # View()
+
+rcmb_qual
+
+rcmb_qual %>% 
+  left_join(rcmb_expected, by = 'cross') %>% 
+  ggplot(aes(x = exp_CO, y = count)) +
+  geom_point() +
+  geom_smooth(method = 'lm', se = FALSE) +
+  geom_abline(slope = 1, intercept = 0, linetype = 'dashed') +
+  coord_cartesian(x = c(0, 2000), y = c(0, 6000))
+
+```
+
+
+```{r}
+x = d_all$`2343x1952` %>% 
+  filter(
+    call == 'cross_over',
+    min_vars_in_hap > 0,
+    mismatch_var_ratio <= 1.5, rel_midpoint >= 0.2, rel_midpoint <= 0.8, # var_skew <= 5,
+    # outer_bound >= 0.1, outer_bound <= 0.9, 
+    # indel_proximity > 4,
+    read1_length >= 100, read2_length >= 100, effective_length >= 200)
+  # View()
+
+x %>% 
+  left_join(tested, by = c('chromosome', 'midpoint')) %>% 
+  View()
+
+d_all$`2343x1952` %>% 
+  filter(
+    call == 'gene_conversion', min_vars_in_hap > 1, mismatch_var_ratio <= 1.5, 
+    # rel_midpoint >= 0.2, rel_midpoint <= 0.8,
+    read1_length >= 150, read2_length >= 150, effective_length >= 250) %>% 
+  View()
+
+```
+
+After going through the 2343x1952 putative COs manually - 
+
+```{r}
+new_filtered = d_all$`2343x1952` %>% 
+  filter(
+    call == 'cross_over',
+    min_vars_in_hap > 0, # indel_proximity >= 5,
+    mismatch_var_ratio <= 1.5, 
+    read1_length >= 100, read2_length >= 100, effective_length >= 200)
+
+tested = read_tsv(
+  here('data/phase_changes/event_summaries_annotated/2343x1952.tsv'),
+  col_types = cols()) %>% 
+  select(chromosome, midpoint, check, comments, read_name)
+
+tested
+
+combined = left_join(
+  new_filtered, tested,
+  by = c('chromosome', 'midpoint', 'read_name'))
+
+combined
+
+# write_tsv(combined %>% select(check, comments, everything()), here('data/phase_changes/event_summaries_annotated/2343x1952.combined.tsv'))
+
+# try min_end_proximity > 10
+
+combined %>% 
+  ggplot(aes(x = check, y = min_end_proximity)) +
+  geom_point()
+
+combined %>% 
+  filter(mismatch_var_ratio <= 1.5) %>% 
+  pivot_longer(
+    cols = c('var_count', 'outer_bound', 'min_end_proximity',
+             'min_vars_in_hap', 'var_skew', 'mismatch_var_ratio',
+             'var_per_hap', 'indel_proximity'),
+    names_to = 'metric',
+    values_to = 'value'
+  ) %>% 
+  
+  ggplot(aes(x = check, y = value)) +
+  geom_jitter(alpha = 0.5, width = 0.1) +
+  facet_wrap(~ metric, scale = 'free_y')
+```
+
+Cleaning up this plot for presentations: 
+
+```{r}
+combined %>% 
+  filter(mismatch_var_ratio <= 1.5) %>% 
+  pivot_longer(
+    cols = c('var_count', 'outer_bound', 'min_end_proximity',
+             'min_vars_in_hap', 'var_skew', 'mismatch_var_ratio',
+             'var_per_hap', 'indel_proximity'),
+    names_to = 'metric',
+    values_to = 'value'
+  ) %>% 
+  filter(!is.na(check)) %>% 
+  mutate(
+    check = factor(case_when(
+      check == 0 ~ 'FP',
+      check == 1 ~ 'TP',
+      check == 2 ~ 'borderline'
+    ), levels = c('FP', 'TP', 'borderline'))
+  ) %>% 
+  
+  ggplot(
+    aes(x = check, y = value)) +
+  geom_jitter(alpha = 0.5, width = 0.1) +
+  facet_wrap(~ metric, scale = 'free_y') +
+  labs(x = 'manual call', y = 'value') +
+  theme_classic() +
+  theme(
+    axis.title = element_text(size = 12, color = 'black', family = 'Helvetica'),
+    axis.text = element_text(size = 12, color = 'black', family = 'Helvetica'),
+    strip.text = element_text(size = 12, color = 'black', family = 'Helvetica')
+  )
+```
+
+
+
+
+```{r}
+ggplot(combined, aes(x = indel_proximity)) +
+  geom_histogram(
+    aes(fill = as.factor(check)), 
+    position = 'dodge',
+    binwidth = 5)
+```
+
+Going to export combined and do the checks for the new COs -
+
+```{r}
+# write_tsv(
+#   combined,
+#   here('data/phase_changes/event_summaries_annotated/2343x1952.combined.tsv')
+# )
+
+```
+
+## Adding more MVR > 1.5 crosses
+
+Increasing mismatch variant ratio:
+
+```{r}
+d_all$`2343x1952` %>% filter(call == 'cross_over', read1_length >= 100, read2_length >= 100, mismatch_var_ratio >= 1.5, mismatch_var_ratio <= 2.0, indel_proximity >= 5, min_end_proximity >= 10) %>% View()
+# saved to 2343x1952.mvr.tsv
+
+d = read_tsv(here('2343x1952.mvr.tsv'),
+             col_types = cols())
+```
+
+
+Manually annotated these separately:
+
+```{r}
+mvr = read_tsv(here('2343x1952.mvr.tsv'), col_types = cols())
+
+mvr %>% count(check)
+```
+
+Looking at the quality metrics:
+
+```{r}
+mvr %>% 
+  pivot_longer(
+    cols = c('var_count', 'outer_bound', 'min_end_proximity',
+             'min_vars_in_hap', 'var_skew', 'mismatch_var_ratio',
+             'var_per_hap', 'indel_proximity'),
+    names_to = 'metric',
+    values_to = 'value'
+  ) %>% 
+  filter(!is.na(check)) %>% 
+  mutate(
+    check = factor(case_when(
+      check == 0 ~ 'FP',
+      check == 1 ~ 'TP',
+      check == 2 ~ 'borderline'
+    ), levels = c('FP', 'TP', 'borderline'))
+  ) %>% 
+  
+  ggplot(
+    aes(x = check, y = value)) +
+  geom_jitter(alpha = 0.5, width = 0.1) +
+  facet_wrap(~ metric, scale = 'free_y') +
+  labs(x = 'manual call', y = 'value') +
+  theme_classic() +
+  theme(
+    axis.title = element_text(size = 12, color = 'black', family = 'Helvetica'),
+    axis.text = element_text(size = 12, color = 'black', family = 'Helvetica'),
+    strip.text = element_text(size = 12, color = 'black', family = 'Helvetica')
+  )
+```
+
+Multiple logistic regression:
+
+```{r}
+mvr %>% 
+  mutate(indel_proximity = 
+           ifelse(!is.finite(indel_proximity), max(read1_length, read2_length), indel_proximity)) %>% 
+  filter(check != 2) %>% 
+  glm(
+  check ~ var_count + outer_bound + min_end_proximity + min_vars_in_hap + var_skew + mismatch_var_ratio + var_per_hap + indel_proximity + effective_length, 
+  data = .,
+  family = 'binomial'
+) %>% 
+  summary()
+```
+
+Keeping significant predictors:
+
+```{r}
+mvr_fit = mvr %>% 
+  mutate(indel_proximity = 
+           ifelse(!is.finite(indel_proximity), max(read1_length, read2_length), indel_proximity)) %>% 
+  filter(check != 2) %>% 
+  mutate(check = factor(check)) %>% 
+  glm(
+  check ~ outer_bound + mismatch_var_ratio + indel_proximity + var_skew, 
+  data = .,
+  family = binomial
+)
+
+mvr_fit
+
+summary(mvr_fit)
+
+```
+
+```{r}
+mvr_factor = mvr %>% filter(check != 2) %>% mutate(check = factor(check)) %>% 
+  mutate(indel_proximity =
+         ifelse(!is.finite(indel_proximity), max(read1_length, read2_length), indel_proximity))
+
+# filter calc
+filter_calc = function(model_coef, outer_bound, mvr, indel_proximity) {
+  values = as.data.frame(model_coef)$Estimate
+  int = values[1]
+  outer_bound_coef = values[2]
+  mvr_coef = values[3]
+  indel_proximity_coef = values[4]
+  pX_numerator = exp(int + (outer_bound_coef*outer_bound) + (mvr_coef*mvr) + (indel_proximity_coef*indel_proximity))
+  pX_denominator = 1 + pX_numerator
+  return(pX_numerator / pX_denominator)
+}
+
+filter_calc(summary(mvr_fit)$coefficients, outer_bound = 0, mvr = 0, indel_proximity = 5)
+
+preds_raw = stats::predict(mvr_fit, mvr_factor, type = 'response')
+```
+
+Testing the training error rate:
+
+```{r}
+preds = rep(0, length(preds_raw))
+# for some reason apparently 1 is not equal to 1?? thanks R
+# so using an instance of 1 (preds_raw[3]) as 1
+preds[preds_raw > 0.5] = 1 
+
+table(preds, mvr_factor$check)
+
+(27 + 97) / 153
+```
+
+Splitting the data for an actual test rate:
+
+```{r}
+# 153 total rows
+mvr_train = mvr_factor %>% slice_sample(n = 120)
+mvr_test = mvr_factor %>% anti_join(mvr_train, by = 'read_name') # 33 rows
+
+dim(mvr_train)
+dim(mvr_test)
+
+train_fit = glm(
+  check ~ outer_bound + mismatch_var_ratio + indel_proximity, 
+  data = mvr_train,
+  family = binomial
+)
+
+test_preds_raw = predict(train_fit, mvr_test, type = 'response')
+
+test_preds = rep(0, length(test_preds_raw))
+test_preds[test_preds_raw > 0.5] = 1
+
+table(test_preds, mvr_test$check)
+
+conf_matrix = as.data.frame(table(test_preds, mvr_test$check))
+
+conf_vals = c(
+  conf_matrix %>% 
+    filter(test_preds == Var2) %>% 
+    select(Freq) %>% 
+    unlist() %>% sum(), # numerator - sum of TP, TN
+  sum(conf_matrix$Freq) # denominator
+)
+
+conf_vals[1] / conf_vals[2]
+
+```
+
+Predicting based on a set of given filters:
+
+```{r}
+# outer bound, mismatch variant ratio, indel proximity, var skew
+predict(
+  mvr_fit, 
+  newdata = data.frame(
+    outer_bound = c(0.3, 0.2, 0.1),
+    indel_proximity = c(70, 10, 5),
+    mismatch_var_ratio = c(0.5, 1.0, 2.0),
+    var_skew = c(1, 3, 5)),
+  type = 'response'
+)
+
+# hard filters will be outer bound > 0.1, indel prox > 5, MVR < 1.5
+# var skew doesn't seem to make a lot of sense as a hard filter
+```
+
+
+## Applying the model to a new cross
+
+```{r}
+diff_cross = d_all$`2343x1691` %>% 
+  filter(call == 'cross_over') %>% 
+  filter(indel_proximity >= 5,
+         mismatch_var_ratio <= 1.5,
+         outer_bound > 0.1,
+         read1_length >= 150, read2_length >= 150,
+         effective_length >= 200)
+
+diff_cross
+```
+
+Predicting whether these are legitimate COs with the model:
+
+```{r}
+diff_cross$pred = predict(
+  mvr_fit, diff_cross, type = 'response'
+)
+
+diff_cross_predicted = diff_cross %>% 
+  mutate(pred_discrete = ifelse(pred <= 0.5, 0, 1)) %>% 
+  select(pred, pred_discrete, everything())
+
+diff_cross_predicted
+```
+
+
+
+
+
