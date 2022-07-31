@@ -39,8 +39,8 @@ mkdir('data/phase_changes/fp_bed')
 
 rule all:
     input:
-        expand('data/phase_changes/bam/{cross}.filtered.bam', cross=CROSSES),
-        expand('data/phase_changes/bam/{cross}.filtered.bam.bai', cross=CROSSES),
+        # expand('data/phase_changes/bam/{cross}.filtered.bam', cross=CROSSES),
+        # expand('data/phase_changes/bam/{cross}.filtered.bam.bai', cross=CROSSES),
         expand('data/phase_changes/event_summaries/{cross}.50.tsv', cross=CROSSES)
 
 rule readcomb_filter:

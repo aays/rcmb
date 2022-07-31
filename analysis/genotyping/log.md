@@ -749,6 +749,53 @@ time snakemake -pr -s analysis/genotyping/freebayes_variant_calling.smk --cores 
 
 done in just an hour - back to the phase change log
 
+## 8/6/2022
+
+today - getting a list of ~10 genes on different chromosomes and setting up IGV
+sessions for at least 3 crosses (one 3071 one with too many, an average one,
+and a 3086 one with not enough) - Rob wants to see these to make decisions about
+genotyping
+
+going to dust off the old GFF parser:
+
+```python
+import gffutils
+import random
+from tqdm import tqdm
+
+db = gffutils.create_db(
+    'data/references/CC4532.v1_1.gene_exons.gff3',
+    dbfn='data/references/CC4532.v1_1.gene_exons.db',
+    force=True, keep_order=True, merge_strategy='merge',
+    sort_attribute_values=True)
+
+db = gffutils.FeatureDB('data/references/CC4532.v1_1.gene_exons.gff3', keep_order=True)
+
+chrs = [f'chromosome_0{i}' for i in range(0, 9)]
+chrs.extend([f'chromosome_{i}' for i in range(10, 18)]
+
+chrs_drawn = random.sample(chrs, 10)
+chrs_drawn.sort()
+
+genes = {k: None for k in chrs_drawn}
+
+for feature in tqdm(db.all_features()):
+    if feature.featuretype != 'gene' or feature.chrom not in chrs_drawn:
+        continue
+    if genes[feature.chrom]:
+        continue
+    else:
+        if random.random() < 0.002:
+            genes[feature.chrom] = feature
+
+with open('genes.temp', 'w') as f:
+    for chrom in chrs_drawn:
+        feature = genes[chrom]
+        f.write(f'{feature.chrom}:{feature.start}-{feature.end}\n')
+
+```
+
+
 
 
 

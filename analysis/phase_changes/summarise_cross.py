@@ -20,6 +20,8 @@ def args():
         type=str, help='VCF with calls for cross of interest')
     parser.add_argument('-m', '--mask_size', required=True,
         type=int, help='Masking size')
+    parser.add_argument('-q', '--mapq', required=False,
+        default=50, type=int, help='MAPQ filter')
     parser.add_argument('--remove_uninformative', required=False,
         action='store_true', help='Ignore all no phase change reads')
     parser.add_argument('-o', '--out', required=True,
@@ -27,7 +29,7 @@ def args():
 
     args = parser.parse_args()
 
-    return args.bam, args.vcf, args.mask_size, \
+    return args.bam, args.vcf, args.mask_size, args.mapq, \
         args.remove_uninformative, args.out
 
 class HiddenPrints:
@@ -39,7 +41,7 @@ class HiddenPrints:
         sys.stdout.close()
         sys.stdout = self._original_stdout
 
-def parse_reads(bam, vcf, mask_size, remove_uninformative, out):
+def parse_reads(bam, vcf, mask_size, mapq, remove_uninformative, out):
     """parse reads and write to file
 
     Parameters
@@ -55,16 +57,15 @@ def parse_reads(bam, vcf, mask_size, remove_uninformative, out):
     out : str
         file to write to
 
-
     Returns
     -------
     None
     """
     fieldnames = [
         'chromosome', 'midpoint', 'rel_midpoint', 'call', 'masked_call',
-        'mask_size', 'var_count', 'min_vars_in_hap', 'var_skew',
-        'mismatch_var_ratio', 'var_per_hap', 'gc_length', 'indel_proximity',
-        'detection', 'read_name']
+        'mask_size', 'var_count', 'outer_bound', 'min_end_proximity', 'min_vars_in_hap', 
+        'var_skew', 'mismatch_var_ratio', 'var_per_hap', 'gc_length', 'indel_proximity',
+        'read1_length', 'read2_length', 'effective_length', 'detection', 'read_name']
 
     with open(out, 'w', newline='') as f:
         writer = csv.DictWriter(f, delimiter='\t', fieldnames=fieldnames)
@@ -73,11 +74,16 @@ def parse_reads(bam, vcf, mask_size, remove_uninformative, out):
 
         for pair in tqdm(reader):
             with HiddenPrints():
-                pair.classify(masking=mask_size)
+                if all([pair.rec_1.mapq > mapq, pair.rec_2.mapq > mapq]):
+                    pair.classify(masking=mask_size, quality=20)
+                else:
+                    continue
 
             if remove_uninformative and 'no_phase_change' in [pair.call, pair.masked_call]:
                 continue
             else:
+                start = pair.rec_1.reference_start
+                end = pair.rec_2.reference_start + len(pair.segment_2)
                 writer.writerow({
                     'chromosome': pair.rec_1.reference_name, 
                     'midpoint': pair.midpoint,
@@ -86,12 +92,17 @@ def parse_reads(bam, vcf, mask_size, remove_uninformative, out):
                     'masked_call': pair.masked_call,
                     'mask_size': mask_size, 
                     'var_count': len(pair.variants_filt),
+                    'outer_bound': pair.outer_bound,
+                    'min_end_proximity': pair.min_end_proximity,
                     'min_vars_in_hap': pair.min_variants_in_haplotype,
                     'var_skew': pair.variant_skew, 
                     'mismatch_var_ratio': pair.mismatch_variant_ratio,
                     'var_per_hap': pair.variants_per_haplotype,
                     'gc_length': pair.gene_conversion_len,
                     'indel_proximity': pair.indel_proximity,
+                    'read1_length': len(pair.rec_1.query_sequence),
+                    'read2_length': len(pair.rec_2.query_sequence),
+                    'effective_length': end - start,
                     'detection': pair.detection,
                     'read_name': pair.rec_1.query_name
                     })

@@ -1533,6 +1533,196 @@ this is looking quite slow so far, likely since there are so many more new varia
 took 34 hours in total - would have taken 21 days on a single core! 
 back to RStudio to get some sample reads out
 
+## 7/6/2022
+
+one more update to summarise cross - going to add read lengths as another column
+to filter off
+
+I'll likely have to redo the summarising after updating the masked call algorithm,
+but this should be handy for the time being
+
+```bash
+time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 20
+```
+
+## 9/6/2022
+
+going to separately do 'nuclear' filtering as well to see if that makes a difference,
+in the quest to reduce min vars in hap to 1 and still have good quality data via other
+filters
+
+modifying the last three rules of `phase_change_filter` temporarily for this - will
+output files in a new subdir of `phase_changes` called `nuclear`
+
+```bash
+mkdir -p data/phase_changes/nuclear
+
+# server is clear right now - upping threads but lowering priority
+nice -n 5 time snakemake -pr -s analysis/phase_changes/phase_change_nuclear.smk --cores 24
+# took 34 hours
+```
+
+## 9/7/2022
+
+getting back on this post evol2022 + salt stuff
+
+need to get expected CO/NCO counts - for that I need:
+
+1. the number of kept (filtered) reads per cross
+2. the 'effective sequence space' across these reads
+
+this second thing is to account for the fact that a LOT
+of these reads seem to overlap, which is an issue
+
+I should be able to get both these things by
+just getting a distribution of sequence space counts - eg
+something like
+
+```
+effective_length count
+1 100
+2 0
+3 0
+4 12
+5 15
+```
+
+all the way up to ~550 - this way, the sum of the second
+column simply gives me the number of kept reads
+
+don't think I need a script for this necessarily - let's just try this in a console:
+
+```python
+import csv
+from tqdm import tqdm
+import readcomb.classification as rc
+
+with open('data/alignments/samples.txt', 'r') as f:
+    samples = [s.rstrip('\n') for s in f]
+
+with open('data/alignments/read_lengths.tsv', 'a', newline='') as f:
+    fieldnames = ['sample', 'effective_length', 'count']
+    writer = csv.DictWriter(f, delimiter='\t', fieldnames=fieldnames)
+    writer.writeheader()
+
+    for sample in tqdm(samples, desc='samples'):
+        bam_fname = f'data/alignments/bam_prepped/{sample}.sorted.bam'
+        vcf_fname = f'data/genotyping/vcf_filtered/{sample}.vcf.gz'
+
+        counts = {k: 0 for k in range(1000)}
+
+        reader = rc.pairs_creation(bam_fname, vcf_fname)
+        for pair in tqdm(reader, desc=f'{sample}'):
+            start = pair.rec_1.reference_start
+            end = pair.rec_2.reference_start + len(pair.segment_2)
+            effective_length = end - start
+            try:
+                counts[effective_length] += 1
+            except:
+                counts[effective_length] = 1
+        
+        for i in sorted(counts.keys()):
+            writer.writerow({
+                'sample': sample,
+                'effective_length': i,
+                'count': counts[i]})
+
+```
+
+I anticipate this will take about 6.5 min per sample from the test
+run - which makes for 3.5 hours for all crosses
+
+after that's done, will first need to transform (possibly using
+R) the data into a per sample total count to get the number of reads,
+and then will get the total number of 'effective sequence space' we have
+in bp to work with
+
+## 10/7/2022
+
+today - getting effective sequence space for each cross:
+
+```R
+library(tidyverse)
+
+d = read_tsv('data/alignments/read_lengths.tsv', col_types = cols())
+
+eff_seq = d %>%
+    mutate(effective_sequence = effective_length * count) %>%
+    group_by(sample) %>%
+    summarise(sum_seq = sum(effective_sequence))
+
+write_tsv(eff_seq, 'data/alignments/effective_sequence.tsv')
+
+read_counts = d %>%
+    group_by(sample) %>%
+    summarise(read_count = sum(count))
+
+write_tsv(read_counts, 'data/alignments/read_counts.tsv')
+```
+
+also going to get variant counts per cross while I'm at it -
+I could probably do this with a bash oneliner involving `wc -l`
+but my brain isn't working enough for that right now
+
+```python
+import csv
+from cyvcf2 import VCF
+from tqdm import tqdm
+
+with open('data/alignments/samples.txt', 'r') as f:
+    samples = [s.rstrip('\n') for s in f]
+
+with open('data/genotyping/variant_counts.tsv', 'w', newline='') as f:
+    fieldnames = ['sample', 'var_count']
+    writer = csv.DictWriter(f, delimiter='\t', fieldnames=fieldnames)
+    writer.writeheader()
+    for sample in tqdm(samples, desc='samples'):
+        reader = VCF(f'data/genotyping/vcf_filtered/{sample}.vcf.gz')
+        counter = 0
+        for record in tqdm(reader, desc=f'{sample}'):
+            counter += 1
+        writer.writerow({
+            'sample': sample,
+            'var_count': counter
+            })
+
+```
+
+## 13/7/2022
+
+readcomb debugging notes after going through that - 
+
+- make `get_midpoint` return both the midpoint and relative midpoint in line 763
+- debug `overlap_disagree` 
+- reduce base quality to 20 - this could happen in `summarise_cross`
+- add MAPQ filter (<50) - this could be independent of `rc.classification`, in `summarise_cross`
+- fix no match bug (reads with one hap + no match called crossover)
+- incorporate 'bounds of read' metric (proximity to read end)
+
+all of these were pretty straightforward, save for the last one... going to 
+update `Pair._describe()` 
+
+recompiling readcomb now that these are done - and off we go again tomorrow! 
+
+## 14/7/2022
+
+today - updating `summarise_cross` as specified above and rerunning with new readcomb
+
+- adding 'min end proximity' as a column
+- adding MAPQ > 50 filter
+- reducing classify base quality to 20
+
+redoing `summarise_cross` - 
+
+```bash
+time snakemake -pr -s analysis/phase_changes/phase_change_nuclear.smk --cores 20
+```
+
+
+
+
+
+
 
 
 
