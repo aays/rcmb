@@ -39,22 +39,23 @@ mkdir('data/phase_changes/fp_bed')
 
 rule all:
     input:
+        expand('data/phase_changes/sam/{cross}.init.sam', cross=CROSSES)
         # expand('data/phase_changes/bam/{cross}.filtered.bam', cross=CROSSES),
         # expand('data/phase_changes/bam/{cross}.filtered.bam.bai', cross=CROSSES),
-        expand('data/phase_changes/event_summaries/{cross}.50.tsv', cross=CROSSES)
+        # expand('data/phase_changes/event_summaries/{cross}.75.tsv', cross=CROSSES)
 
 rule readcomb_filter:
     input:
         bam = 'data/alignments/bam_prepped/{cross}.sorted.bam',
         vcf = 'data/genotyping/vcf_filtered/{cross}.vcf.gz'
     output:
-        temp('data/phase_changes/sam/{cross}.init.sam')
+        'data/phase_changes/sam/{cross}.init.sam'
     threads:
-        16
+        24
     params:
         log = 'data/phase_changes/phase_change_filter.log',
-        min_qual = '30',
-        min_mapq = '40'
+        min_qual = '0',
+        min_mapq = '0'
     shell:
         'time readcomb-filter --bam {input.bam} --vcf {input.vcf} '
         '--processes {threads} --log {params.log} --quality {params.min_qual} '
@@ -63,21 +64,22 @@ rule readcomb_filter:
 rule readcomb_fp:
     input:
         sam = 'data/phase_changes/sam/{cross}.init.sam',
-        false_plus = ancient('data/phase_changes/parental/{cross}.plus.filtered.sam'),
-        false_minus = ancient('data/phase_changes/parental/{cross}.minus.filtered.sam'),
+        false_plus = 'data/phase_changes/parental/{cross}.plus.filtered.sam',
+        false_minus = 'data/phase_changes/parental/{cross}.minus.filtered.sam',
         vcf = 'data/genotyping/vcf_filtered/{cross}.vcf.gz'
     output:
         bed_lookup = 'data/phase_changes/fp_bed/{cross}.midpoint.bed.gz',
         filtered_sam = 'data/phase_changes/sam/{cross}.filtered.sam'
     threads:
-        4
+        8
     params:
         log = 'data/phase_changes/false_positives.log',
-        method = 'midpoint'
+        method = 'midpoint',
+        length = '0' # read length filter
     shell:
         'time readcomb-fp --fname {input.sam} '
         '--false_plus {input.false_plus} --false_minus {input.false_minus} '
-        '--vcf {input.vcf} --method {params.method} '
+        '--vcf {input.vcf} --method {params.method} --read_length_filter {params.length} '
         '--false_bed_out {output.bed_lookup} --log {params.log} '
         '--out {output.filtered_sam} '
     
@@ -102,9 +104,10 @@ rule summarise_cross:
         bam = 'data/phase_changes/sam/{cross}.filtered.sam',
         vcf = 'data/genotyping/vcf_filtered/{cross}.vcf.gz'
     output:
-        'data/phase_changes/event_summaries/{cross}.50.tsv'
+        'data/phase_changes/event_summaries/{cross}.75.tsv'
     shell:
         'python analysis/phase_changes/summarise_cross.py '
-        '--bam {input.bam} --vcf {input.vcf} --mask_size 50 '
-        '--remove_uninformative --out {output}'
-        
+        '--bam {input.bam} --vcf {input.vcf} --mask_size 75 '
+        '--mapq 0 --remove_uninformative --out {output}'
+
+

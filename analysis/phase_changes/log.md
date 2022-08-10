@@ -1718,8 +1718,588 @@ redoing `summarise_cross` -
 time snakemake -pr -s analysis/phase_changes/phase_change_nuclear.smk --cores 20
 ```
 
+## 2/8/2022
+
+today - seeing whether implementing the above filters on the midpoint method
+set will do the trick
+
+updating `phase_change_detection.smk` based on changes to `phase_change_nuclear`
+(eg new metrics, mapq filter) and rerunning:
+
+```bash
+time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 15
+```
+
+looks like 2344x1952 was bonked - regenerating this while I look at the number of crossovers
+across the other crosses:
+
+```R
+# in event_summaries
+library(tidyverse)
+library(fs)
+
+fnames = dir_ls('.', regexp = '.*75\\..*')
+
+d_all = map(
+  fnames,
+  ~ read_tsv(., col_types = cols()) %>% 
+    filter(masked_call == 'cross_over') %>% 
+    mutate(
+      indel_proximity = as.numeric(
+        ifelse(indel_proximity == 'N/A', Inf, indel_proximity)
+      )
+    )
+)
+
+names(d_all) = str_extract(fnames, '[GB0-9]{4,5}x[0-9]{4}')
+
+rcmb_qual = d_all %>% 
+  map_dfr(
+    ~ filter(.,
+      call == 'cross_over',
+      min_vars_in_hap >= 1, mismatch_var_ratio <= 1.5, 
+      outer_bound >= 0.1, outer_bound <= 0.9,
+      read1_length >= 150, read2_length >= 150, effective_length >= 200,
+      indel_proximity >= 5) %>% 
+      nrow()
+  ) %>% 
+  pivot_longer(
+    cols = everything(),
+    names_to = 'cross',
+    values_to = 'count') %>% 
+  arrange(desc(count)) %>% 
+  mutate(s = sum(count))
+```
+
+looks like marginal increases (20-40 COs) over the nuclear set... I'm curious whether
+those 20-40 COs are actually legit too, given that they must have been removed from the
+nuclear set since false positives were nearby
 
 
+## 4/8/2022
+
+today - trying to check on nuclear filtering, and make sure it's doing its job right
+
+after eyeballing these bed files and parental fp files, these do look right - but
+it occurs to me that these are all reads that just passed `filter`, and many might
+still be `no_phase_change` or `complex` calls
+
+prepped one of the fp sets as a read name sorted sam for use with `pairs_creation`:
+
+```python
+>>> import readcomb.classification as rc
+>>> from tqdm import tqdm
+>>> event_counts = {}
+>>> bam_fname = '2344x1952.fp.sort.sam'
+>>> vcf_fname = '../genotyping/vcf_filtered/2344x1952.vcf.gz'
+>>> reader = rc.pairs_creation(bam_fname, vcf_fname)
+>>> for pair in tqdm(reader):
+...     pair.classify(masking=0)
+...     if pair.call not in event_counts:
+...         event_counts[pair.call] = 1
+...     elif pair.call in event_counts:
+...         event_counts[pair.call] += 1
+>>> event_counts
+{'no_phase_change': 4536, 'gene_conversion': 12550, 'complex': 2449, 'cross_over': 13588}
+>>> (event_counts['no_phase_change'] + event_counts['complex']) / sum(event_counts.values())
+0.210880656945325
+```
+
+20% of reads! 
+
+let's try removing these, writing to file, and then seeing how many crossovers are left
+
+```python
+import pysam
+
+bam_reader = pysam.AlignmentFile('../alignments/parental_bam/CC2344.bam', 'r')
+bam_writer = pysam.AlignmentFile('2344x1952.plus.cleaned.sam', 'w', template=bam_reader)
+
+reader = rc.pairs_creation(bam_fname, vcf_fname)
+counter = 0
+kept = 0
+for pair in tqdm(reader):
+    counter += 1
+    pair.classify(masking=0)
+    if pair.call in ['cross_over', 'gene_conversion']:
+        kept += 1
+        bam_writer.write(pair.rec_1)
+        bam_writer.write(pair.rec_2)
+    else:
+        continue
+# 33125 total, 26139 kept
+```
+
+repeating with minus:
+
+```bash
+# in data/phase_changes - setting up for the above
+samtools view -O sam parental_bam/2344x1952.minus.filtered.sam.bam > 2344x1952.minus.sam
+cat header 2344x1952.minus.sam > 2344x1952.minus.h.sam
+samtools sort -n -O sam 2344x1952.minus.h.sam > 2344x1952.minus.sam
+```
+
+and then back to python:
+
+```python
+bam_reader = pysam.AlignmentFile('../alignments/parental_bam/CC1952.bam', 'r')
+bam_writer = pysam.AlignmentFile('2344x1952.minus.cleaned.sam', 'w', template=bam_reader)
+
+bam_fname = '2344x1952.minus.sam'
+reader = rc.pairs_creation(bam_fname, vcf_fname)
+counter = 0
+kept = 0
+for pair in tqdm(reader):
+    pair.classify(masking=0)
+    if pair.call in ['cross_over', 'gene_conversion']:
+        kept += 1
+        bam_writer.write(pair.rec_1)
+        bam_writer.write(pair.rec_2)
+    else:
+        continue
+# 18135 total, 14169 kept
+```
+
+and now let's generate a bed file from these - going to move them to a folder
+called `nuclear_test`
+
+```bash
+# in project root
+
+# going to run for 2-3 hours
+time readcomb-filter --bam data/alignments/bam_prepped/2344x1952.sorted.bam \
+--vcf data/genotyping/vcf_filtered/2344x1952.vcf.gz \
+--processes 20 --log data/phase_changes/phase_change_filter.log \
+--quality 30 --min_mapq 40 --out data/phase_changes/nuclear_test/2344x1952.init.sam
+
+# need to sort the two filtered fp sams by position, compress them, and index
+# running these in nuclear_test
+samtools sort -O bam 2344x1952.plus.cleaned.sam > 2344x1952.plus.cleaned.bam
+samtools index 2344x1952.plus.cleaned.bam
+samtools sort -O bam 2344x1952.minus.cleaned.sam > 2344x1952.minus.cleaned.bam
+samtools index 2344x1952.minus.cleaned.bam
+
+time readcomb-fp --fname data/phase_changes/nuclear_test/2344x1952.init.sam \
+--false_plus data/phase_changes/nuclear_test/2344x1952.plus.cleaned.bam \
+--false_plus data/phase_changes/nuclear_test/2344x1952.minus.cleaned.bam \
+--vcf data/genotyping/vcf_filtered/2344x1952.vcf.gz \
+--method nuclear --false_bed_out data/phase_changes/nuclear_test/2344x1952.nuclear.bed.gz \
+--log data/phase_changes/false_positives.log \
+--out data/phase_changes/nuclear_test/2344x1952.filtered.sam
+```
+
+while this runs - I'm curious as to how much sequence space is blocked off
+for each cross by the nuclear filtering, and how much variation there is on that front
+
+```python
+# in data/phase_changes/nuclear/fp_bed
+import os
+import csv
+import gzip
+from glob import glob
+from tqdm import tqdm
+
+fnames = glob('*bed.gz')
+
+seq_space_count = {}
+
+for fname in tqdm(fnames, desc='crosses'):
+    cross = fname.rstrip('.nuclear.bed.gz')
+    seq_space_count[cross] = {}
+    with gzip.open(fname, 'rt') as f:
+        reader = csv.DictReader(f, delimiter='\t')
+        for line in tqdm(reader, desc=cross):
+            chrom, start, end = line['#chrom'], int(line['start']), int(line['end'])
+            if chrom not in seq_space_count[cross]:
+                seq_space_count[cross][chrom] = end - start
+            else:
+                seq_space_count[cross][chrom] += end - start
+
+for cross in seq_space_count:
+    print(cross, sum(seq_space_count[cross].values()))
+
+# I should save this
+
+with open('nuclear_blocked.tsv', 'w') as f:
+    fieldnames = ['cross', 'blocked_seq']
+    fieldnames.extend([f'chromosome_0{i}' for i in range(1, 10)])
+    fieldnames.extend([f'chromosome_{i}' for i in range(10, 18)])
+    fieldnames.extend(['mtDNA', 'cpDNA'])
+    writer = csv.DictWriter(f, delimiter='\t', fieldnames=fieldnames)
+    writer.writeheader()
+    for cross in seq_space_count:
+        out_dict = {'cross': cross, 'blocked_seq': sum(seq_space_count[cross].values())}
+        for scaffold in fieldnames[2:]:
+            try:
+                out_dict[scaffold] = seq_space_count[cross][scaffold]
+            except KeyError:
+                out_dict[scaffold] = 0
+        writer.writerow(out_dict)
+
+```
+                
+## 5/8/2022
+
+today - how do the above numbers change if just COs/GCs are kept in the nuclear filters?
+
+but first, running this (originally written up yesterday) to see how the actual
+CO counts and such are impacted:
+
+```bash
+time readcomb-fp --fname data/phase_changes/nuclear_test/2344x1952.init.sam \
+--false_plus data/phase_changes/nuclear_test/2344x1952.plus.cleaned.bam \
+--false_minus data/phase_changes/nuclear_test/2344x1952.minus.cleaned.bam \
+--vcf data/genotyping/vcf_filtered/2344x1952.vcf.gz \
+--method nuclear --false_bed_out data/phase_changes/nuclear_test/2344x1952.nuclear.bed.gz \
+--log data/phase_changes/false_positives.log \
+--out data/phase_changes/nuclear_test/2344x1952.filtered.sam
+# took 14 min
+```
+
+once the bed file is made, I'll do a similar calculation to the thing above just for 2344x1952
+to then compare against the values in `nuclear_blocked.tsv`
+
+here goes:
+
+```python
+import os
+import csv
+import gzip
+from tqdm import tqdm
+
+chroms = {}
+
+with gzip.open('data/phase_changes/nuclear_test/2344x1952.nuclear.bed.gz, 'rt') as f:
+    reader = csv.DictReader(f, delimiter='\t')
+    for line in tqdm(reader, desc=cross):
+        chrom, start, end = line['#chrom'], int(line['start']), int(line['end'])
+        if chrom not in chroms:
+            chroms[chrom] = end - start
+        else:
+            chroms[chrom] += end - start
+
+>>> sum(chroms.values())
+7809839
+
+# from nuclear_blocked.tsv
+>>> 7809839 / 10876012
+0.71807929229942
+```
+
+next up - does the amount of crossovers scale with how much sequence is blocked off? checked
+this in RStudio after exporting but it doesn't seem that's the case
+
+how many COs do I get off of the new sam filtered with a smaller fp set? 
+
+```python
+import readcomb.classification as rc
+from tqdm import tqdm
+
+bam_fname = 'data/phase_changes/nuclear_test/2344x1952.filtered.sam'
+vcf_fname = 'data/genotyping/vcf_filtered/2344x1952.vcf.gz'
+
+reader = rc.pairs_creation(bam_fname, vcf_fname)
+
+counter = 0
+for pair in tqdm(reader):
+    pair.classify(masking=75, quality=20)
+    
+    if pair.call == 'no_phase_change':
+        continue
+    if all([pair.rec_1.mapq >= 50, pair.rec_2.mapq >= 50]) and pair.call == 'cross_over':
+        counter += 1
+
+# 19537! 
+```
+
+but looks like `summarise_cross` mistakenly filters things of mapq 50 - which is probably
+a lot! let's see how many are in the original with those reads included:
+
+```python
+# rerunning the above with this incorrect filter
+counter = 0
+for pair in tqdm(reader):
+    pair.classify(masking=75, quality=20)
+    
+    if pair.call == 'no_phase_change':
+        continue
+    if all([pair.rec_1.mapq > 50, pair.rec_2.mapq > 50]) and pair.call == 'cross_over':
+        counter += 1
+# 19475
+
+# and now trying it with the original
+bam_fname = 'data/phase_changes/nuclear/sam/2344x1952.filtered.sam'
+reader = rc.pairs_creation(bam_fname, vcf_fname)
+
+old_counter = 0
+for pair in tqdm(reader):
+    pair.classify(masking=75, quality=20)
+    
+    if pair.call == 'no_phase_change':
+        continue
+    if all([pair.rec_1.mapq >= 50, pair.rec_2.mapq >= 50]) and pair.call == 'cross_over':
+        old_counter += 1
+# 14234 - why so much more than in the existing results?
+```
+
+going to rerun `summarise_cross.py` at the command line for this cross after changing
+the mapq thing and removing the requirement for `no_phase_change` to not be in `masked_call`
+
+```bash
+time python analysis/phase_changes/summarise_cross.py \
+--bam data/phase_changes/nuclear/sam/2344x1952.filtered.sam \
+--vcf data/genotyping/vcf_filtered/2344x1952.vcf.gz \
+--mask_size 75 --remove_uninformative --out mapq_filter_test.tsv
+
+# and then the with the cleaned fp
+time python analysis/phase_changes/summarise_cross.py \
+--bam data/phase_changes/nuclear_test/2344x1952.filtered.sam \
+--vcf data/genotyping/vcf_filtered/2344x1952.vcf.gz \
+--mask_size 75 --remove_uninformative --out mapq_filter_test.tsv
+
+# crossover calls went from 891 to 1386!
+```
+
+this jump alone makes it worth it to apply something similar to readcomb-fp I think...
+and it makes sense - I should only be filtering reads overlapping with false positives
+that are actually called as crossovers or gene conversions, instead of anything indiscriminately
+passed by `readcomb-filter` (since many reads end up getting 'failed' on base quality etc after)
+
+couple things now - I need to update classification so that pairs without masked calls
+still have quality metrics calculated for them (since there's a lot more of those than expected)
+and then rerun `summarise_cross`
+
+I should also add these things to `summarise_cross`/readcomb to give the
+logistic regression more predictors:
+
+- read mapq (summarise cross)
+- some measure of (focal?) variant quality (min variant GQ? mean? idk) - do in summarise cross
+- maybe even use the QUAL scores from the VCF directly
+- number of indels in the read (eg insertions/deletions in the alignment) - this is a readcomb addition
+- size of most proximate indel, if there is one
+
+and fix the line in `Pair._describe()` where quality metrics aren't calculated
+if the masked call isn't present and/or is `no_phase_change`
+
+## 7/8/2022
+
+continuing work on this - didn't get to finish it earlier
+
+I've added `proximate_indel_length` and `indels` attributes to readcomb,
+but still need to modify `summarise_cross` with read mapq and some kind of variant
+quality metric (e.g. based off of `pair.variants_filt`)
+
+going to test the readcomb changes before recompiling:
+
+```python
+import classification as rc
+from tqdm import tqdm
+
+bam_fname = '../../rcmb/data/phase_changes/nuclear/sam/2344x1952.filtered.sam'
+vcf_fname = '../../rcmb/data/genotyping/vcf_filtered/2344x1952.vcf.gz'
+reader = rc.pairs_creation(bam_fname, vcf_fname)
+pairs = []
+for pair in tqdm(reader):
+    pair.classify(masking=75)
+    if pair.indels:
+        pairs.append(pair)
+    if len(pairs) == 10:
+        break
+
+```
+
+looks good - going to recompile and then update `summarise_cross` as needed
+
+added the following metrics:
+
+- `min_var_qual` - lowest QUAL value in variants spanned by read
+- `min_var_depth` - lowest allele depth in variants spanned by read
+- `avg_diff_parental_gq` - average of pairwise differences in GQ of parental alleles
+- `avg_hap_var_gq` - average GQ of alleles matched by recombinant haplotype
+- `avg_hap_var_depth` - average GQ of alleles matched by recombinant haplotype
+
+these metrics need to disregard no match variants - so those are now removed
+from consideration just for calculating these metrics
+
+and now almost ready to run this again on the nuclear data! before I do, let's sum up the changes:
+
+- added new metrics (see above) both in readcomb and in `summarise_cross` directly
+- fixed bug in readcomb that should now mean metrics are still calculated if masked call is `no_phase_change`
+- mapq filtering in `summarise_cross` is now >= 50, not just > 50
+
+the main outstanding thing left to do is fix up `readcomb-fp` to only keep fp events
+that are actually crossovers or noncrossovers, but before that let's just make sure
+`summarise_cross` is working as intended:
+
+```bash
+python analysis/phase_changes/summarise_cross.py \
+--bam data/phase_changes/nuclear/sam/2344x1952.filtered.sam \
+--vcf data/genotyping/vcf_filtered/2344x1952.vcf.gz \
+--mask_size 75 --mapq 50 --remove_uninformative --out sc_test.tsv
+```
+
+this looks good, though I forgot to fix the issue in midpoint assignment where
+it relies on the masked call still.. one more reason to recompile I suppose
+
+also I just realized that all the 'cleaned' stuff I did above was wrong cause
+I was using the original parental bams and not parental bams that had been
+bamprepped... brb about to swan dive into the ocean
+
+need to test how many of the retained false plus/minus reads are actually
+`no_phase_change` bc readcomb-fp should be filtering these already! 
+
+still - it looks like some still slipped through, likely due to prev bugs
+in readcomb that existed when I first did the fp runs:
+
+```python
+>>> import readcomb.classification as rc
+>>> from tqdm import tqdm
+>>> bam_fname = 'test.sorted.sam' # 2344x1952 plus fp reads, read name sorted
+>>> vcf_fname = '../../genotyping/vcf_filtered/2344x1952.vcf.gz'
+>>> reader = rc.pairs_creation(bam_fname, vcf_fname)
+>>> d = {}
+>>> total = 0
+... for pair in tqdm(reader):
+...     total += 1
+...     pair.classify(masking=0)
+...     if pair.call in d:
+...         d[pair.call] += 1
+...     elif pair.call not in d:
+...         d[pair.call] = 1
+33125it [04:03, 136.27it/s]
+>>> total
+33125
+
+>>> d
+{'no_phase_change': 4536, 'gene_conversion': 12550, 'complex': 2450, 'cross_over': 13589}
+```
+
+going to redo this and also set some read length filters - the reads should
+both be at least 100 bp long and specifically not be `no_phase_change` calls
+
+going to recompile readcomb as 0.4.0, and then will first run `summarise_cross`
+on existing filtered files just to have something for tomorrow's meeting in the meantime
+(regenerating all the fp files will take a while)
+
+```bash
+# after clearing `event_summaries` - this should just run the final summarise_cross rule
+time snakemake -pr -s analysis/phase_changes/phase_change_nuclear.smk --cores 4
+```
+
+and now to regen basically everything overnight:
+
+```bash
+rm -v data/phase_changes/nuclear/fp_bed/*bed.gz*tbi
+rm -v data/phase_changes/nuclear/sam/*.filtered.sam
+rm -v data/phase_changes/nuclear/bam/*filtered*bam
+time snakemake -pr -s analysis/phase_changes/phase_change_nuclear.smk --cores 30
+```
+
+## 9/8/2022
+
+today - lots of things...
+
+first - let's dial back on basically all filters we have going here
+
+that includes the mapq filter in `readcomb-filter` and the base quality filters
+in classification - and then next, we'll switch to the midpoint filtering
+just for the sake of getting numbers
+
+that will then need to be repeated with nuclear filtering to see the difference
+made, after which I iteratively add more and more filters for a sense of how
+much is retained/lost 
+
+on top of this, I need to get the numbers on how much was lost at each
+point from a given filter - fortunately this is what all the logs 
+were implemented for! going to go through these in a separate analysis
+folder called `filters` 
+
+in the meantime, going to
+
+- remove mapq and base qual filter in `filter` (forgot I had the latter here!) 
+- switch to midpoint filtering
+- turn off base quality filter in `classification` (via `summarise_cross`)
+- turn off base quality filter in `parental_phase_changes.smk`? 
+
+going to do this via `phase_change_detection.smk` - going to leave
+`phase_change_nuclear.smk` as is for now
+
+finally, need to update `summarise_cross` so that it also outputs
+base qualities of phase change containing variants
+
+```bash
+rm -v data/phase_changes/event_summaries
+rm -v data/phase_changes/sam
+rm -v data/phase_changes/bam
+rm -v data/phase_changes/fp_bed
+
+```
+
+changes to readcomb:
+- add base qual filter to command line args in readcomb-fp
+- add base qual as attribute to `Pair` objects 
+    - mean base qual and min base qual for phase-change-involved variants
+
+will need to see the distribution of base quals after the fact as well - but let's
+get re-filtering first, with all min mapq and base qual filters set to 0
+
+going to just get readcomb-filter going again while I rejig readcomb-fp and classification:
+
+```bash
+# rule all just set to the 'init.sam' files, no fp filtering here
+time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 24
+```
+
+and now to get these readcomb changes going - I've updated the detection
+method to include base quals, switched the default base qual filter to 0, and
+added `min_base_qual`, `mean_base_qual`, and `phase_change_variants` as new
+attributes to `Pair` objects
+
+recompiling and then off we go - the workflow should continue running as expected
+
+in the meantime, I'm going to work on `summarise_cross` - let me see if I can
+implement multiprocessing here to speed it up somewhat
+
+alright, blind run after a test implementation:
+
+```bash
+mkdir p_test
+head -n 10000 data/phase_changes/sam/2344x1952.init.sam > p_test/input.sam
+
+python analysis/phase_changes/summarise_cross.py \
+--bam p_test/input.sam \
+--vcf data/genotyping/vcf_filtered/2344x1952.vcf.gz \
+--mask_size 75 --processes 10 --mapq 0 --base_qual 20 \
+--remove_uninformative --out p_test/csv_test
+```
+
+after an hour of trial and error and various bug fixes... this works!!! 
+
+going to update it tomorrow to handle and concatenate the temp files but I'm so excited!
+
+## 10/8/2022
+
+today - 
+
+- updating `summarise_cross` to concatenate and handle files correctly
+- if possible - implementing a counter queue for `summarise_cross`
+- doing a speed test on `readcomb-fp` and then parallelizing if necessary
+
+the first step should be pretty straightforward - going to start with that and then test
+
+here goes:
+
+```bash
+time python analysis/phase_changes/summarise_cross.py \
+--bam p_test/input.sam \
+--vcf data/genotyping/vcf_filtered/2344x1952.vcf.gz \
+--mask_size 75 --processes 4 --mapq 0 --base_qual 20 \
+--remove_uninformative --out p_test/csv_test
+```
+
+looks great! now for a quick implementation of a counter object and then we're good to go
+
+next up - a speed test on readcomb-fp
 
 
 
