@@ -115,8 +115,7 @@ class Processor(Process):
                         pair_vars = [
                             v for i, v in enumerate(pair.variants_filt)
                             if i not in no_match_idx]
-
-                    writer.writerow({
+                    out_dict = {
                         'chromosome': pair.rec_1.reference_name, 
                         'midpoint': pair.midpoint,
                         'start': pair.rec_1.reference_start,
@@ -137,16 +136,6 @@ class Processor(Process):
                         'indel_proximity': pair.indel_proximity,
                         'proximate_indel_length': pair.proximate_indel_length,
                         'read1_mapq': pair.rec_1.mapq, 'read2_mapq': pair.rec_2.mapq,
-                        'min_var_qual': round(min([v.QUAL for v in pair_vars]), 2),
-                        'min_var_depth': min(np.concatenate([v.gt_depths for v in pair_vars])),
-                        'avg_diff_parental_gq': round(
-                            sum([abs(v.gt_quals[0] - v.gt_quals[1]) 
-                            for v in pair_vars]) / len(pair_vars), 2),
-                        'avg_hap_var_gq': round(
-                            sum(v.gt_quals[detection_indices[i]]
-                            for i, v in enumerate(pair_vars)) / len(pair_vars), 2),
-                        'avg_hap_var_depth': sum(v.gt_depths[detection_indices[i]]
-                            for i, v in enumerate(pair_vars)) / len(pair_vars),
                         'min_base_qual': pair.min_base_qual,
                         'mean_base_qual': pair.mean_base_qual,
                         'read1_length': len(pair.rec_1.query_sequence),
@@ -154,8 +143,27 @@ class Processor(Process):
                         'effective_length': end - start,
                         'detection': pair.detection,
                         'read_name': pair.rec_1.query_name
-                        })
-                
+                        }
+
+                    if pair_vars:
+                        out_dict['min_var_qual'] = round(min([v.QUAL for v in pair_vars]), 2)
+                        out_dict['min_var_depth']: min(np.concatenate([v.gt_depths for v in pair_vars]))
+                        out_dict['avg_diff_parental_gq'] = round(
+                            sum([abs(v.gt_quals[0] - v.gt_quals[1]) 
+                            for v in pair_vars]) / len(pair_vars), 2)
+                        out_dict['avg_hap_var_gq'] = round(
+                            sum(v.gt_quals[detection_indices[i]]
+                            for i, v in enumerate(pair_vars)) / len(pair_vars), 2)
+                        out_dict['avg_hap_var_depth'] = sum(v.gt_depths[detection_indices[i]]
+                            for i, v in enumerate(pair_vars)) / len(pair_vars)
+                    else:
+                        out_dict['min_var_qual'] = -1
+                        out_dict['min_var_depth'] = -1
+                        out_dict['avg_diff_parental_gq'] = -1
+                        out_dict['avg_hap_var_gq'] = -1
+                        out_dict['avg_hap_var_depth'] = -1
+                    writer.writerow(out_dict)
+
                 current_pair = self.input_queue.get(block=True)
         
 

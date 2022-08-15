@@ -75,10 +75,11 @@ rule readcomb_filter:
     output:
         expand('data/phase_changes/parental/{cross}.filtered.sam', cross=PARENT_CROSSES),
     threads:
-        16
+        30
     params:
         log = 'data/phase_changes/parental_phase_changes.log',
-        min_qual = '30'
+        min_qual = '0',
+        min_mapq = '0'
     run:
         for mt_plus in CROSS_DICT: 
             cross_strains = CROSS_DICT[mt_plus]
@@ -98,7 +99,7 @@ rule readcomb_filter:
                     'time readcomb-filter --bam data/alignments/parental_bam_prepped/{mt_plus}.sorted.bam '
                     '--vcf data/genotyping/vcf_filtered/{cross}.vcf.gz ' 
                     '--processes {threads} --log {params.log} '
-                    '--quality {params.min_qual} '
+                    '--quality {params.min_qual} --min_mapq {params.min_mapq} '
                     '--out data/phase_changes/parental/{cross}.plus.filtered.sam')
         for mt_minus in MINUS_CROSS_DICT:
             cross_strains = MINUS_CROSS_DICT[mt_minus]
@@ -118,6 +119,6 @@ rule readcomb_filter:
                     'time readcomb-filter --bam data/alignments/parental_bam_prepped/{mt_minus}.sorted.bam '
                     '--vcf data/genotyping/vcf_filtered/{cross}.vcf.gz '
                     '--processes {threads} --log {params.log} '
-                    '--quality {params.min_qual} '
+                    '--quality {params.min_qual} --min_mapq {params.min_mapq} '
                     '--out data/phase_changes/parental/{cross}.minus.filtered.sam')
 

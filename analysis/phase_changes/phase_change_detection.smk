@@ -39,10 +39,10 @@ mkdir('data/phase_changes/fp_bed')
 
 rule all:
     input:
-        expand('data/phase_changes/sam/{cross}.init.sam', cross=CROSSES)
-        # expand('data/phase_changes/bam/{cross}.filtered.bam', cross=CROSSES),
-        # expand('data/phase_changes/bam/{cross}.filtered.bam.bai', cross=CROSSES),
-        # expand('data/phase_changes/event_summaries/{cross}.75.tsv', cross=CROSSES)
+        expand('data/phase_changes/sam/{cross}.init.sam', cross=CROSSES),
+        expand('data/phase_changes/bam/{cross}.filtered.bam', cross=CROSSES),
+        expand('data/phase_changes/bam/{cross}.filtered.bam.bai', cross=CROSSES),
+        expand('data/phase_changes/event_summaries/{cross}.75.tsv', cross=CROSSES)
 
 rule readcomb_filter:
     input:
@@ -70,18 +70,17 @@ rule readcomb_fp:
     output:
         bed_lookup = 'data/phase_changes/fp_bed/{cross}.midpoint.bed.gz',
         filtered_sam = 'data/phase_changes/sam/{cross}.filtered.sam'
-    threads:
-        8
     params:
         log = 'data/phase_changes/false_positives.log',
         method = 'midpoint',
-        length = '0' # read length filter
+        length = '0', # read length filter
+        qual = '0' # base qual
     shell:
         'time readcomb-fp --fname {input.sam} '
         '--false_plus {input.false_plus} --false_minus {input.false_minus} '
         '--vcf {input.vcf} --method {params.method} --read_length_filter {params.length} '
-        '--false_bed_out {output.bed_lookup} --log {params.log} '
-        '--out {output.filtered_sam} '
+        '--base_qual_filter {params.qual} --false_bed_out {output.bed_lookup} '
+        '--log {params.log} --out {output.filtered_sam}'
     
 rule bam_sort:
     input:
@@ -105,9 +104,15 @@ rule summarise_cross:
         vcf = 'data/genotyping/vcf_filtered/{cross}.vcf.gz'
     output:
         'data/phase_changes/event_summaries/{cross}.75.tsv'
+    threads:
+        12
+    params:
+        mapq = '0',
+        mask_size = '75',
+        base_qual = '0'
     shell:
         'python analysis/phase_changes/summarise_cross.py '
-        '--bam {input.bam} --vcf {input.vcf} --mask_size 75 '
-        '--mapq 0 --remove_uninformative --out {output}'
-
+        '--bam {input.bam} --vcf {input.vcf} --mask_size {params.mask_size} '
+        '--processes {threads} --mapq {params.mapq} --base_qual {params.base_qual} ' 
+        '--out {output}'
 

@@ -2299,8 +2299,249 @@ time python analysis/phase_changes/summarise_cross.py \
 
 looks great! now for a quick implementation of a counter object and then we're good to go
 
-next up - a speed test on readcomb-fp
+next up - a speed test on readcomb-fp (although these fp files will need to be
+regenerated downstream I think)
 
+```bash
+time readcomb-fp --fname data/phase_changes/sam/2344x1952.init.sam \
+--false_plus data/phase_changes/parental/2344x1952.plus.filtered.sam \
+--false_minus data/phase_changes/parental/2344x1952.minus.filtered.sam \
+--vcf data/genotyping/vcf_filtered/2344x1952.vcf.gz \
+--method midpoint --read_length_filter 0 --log fp.log \
+--false_bed_out 2344x1952.test.bed.out --out 2344x1952.test.filter.sam
+# took 36 min - 6 min for bed creation, 30 min for actual filtering
+```
+
+seems to be a bug here - need to update the tabix command to include `-b2 -e3`
+
+## 11/8/2022
+
+going to recompile readcomb with that bug fix and then get the fp stuff running 
+
+`readcomb-filter` completed in 18 hours (instead of the 15 days it would have taken otherwise!)
+so that's pretty good - just need fp done by tonight, after which I'll run the updated
+`summarise_cross` and get some descriptive stats about quality metrics and the distributions
+of metrics like mapq
+
+though it occurs to me I still need to re-run readcomb-filter on the parental files! let's
+get that going -
+
+```bash
+time snakemake -pr -s analysis/phase_changes/parental_phase_changes.smk --cores 30
+# going very hard on the server here but I'm in a rush and it seems clear!  
+# min mapq and base qual set to 0 - although I should get the mapq distribution of parental reads
+```
+
+getting the mapq distribution (among other things) for these parental sequences - 
+gonna get a Jupyter notebook going for this - and a new folder called `filters`
+to get these sorts of statistics in
+
+## 12/8/2022
+
+lol that took 27 hours
+
+now for the actual fp step:
+
+```bash
+# rule all now set to actually do fp filtering
+time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 8
+# took 18 hours - and that includes the sorting/bam conversion/indexing after
+```
+
+will also create bams for IGV viewing if needed:
+
+```bash
+# in data/phase_changes/
+for fname in parental/*sam; do
+    f=$(basename ${fname} .sam)
+    samtools sort -O bam -o parental/${f}.bam ${fname};
+    samtools index parental/${f}.bam;
+done
+```
+
+## 13/8/2022
+
+today - 
+
+- run `summarise_cross` on all samples
+- get metrics of reads lost along the various filtering stages (e.g. by looking at filter/fp logs)
+- generate single table with summaries of this - will probably do this in an Rmd
+- requeue nuclear filtering in `phase_changes/nuclear` - this is to contrast nuclear/midpoint filtering
+
+running `summarise_cross` - now supports multiprocessing, so that needs to be added as
+a parameter in the workflow
+
+```bash
+# rule all now updated to generate tsvs
+# no longer has --remove_uninformative either for easier overall summary stat calculations
+# had to upload readcomb to handle reads that are too short vs masking size correctly
+
+time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 12
+```
+
+all done, and the parallelization meant that it just took 11 minutes to go through
+all 32 crosses! not bad at all
+
+redoing the nuclear filtering as well to contrast the numbers:
+
+```bash
+# modified the workflow to use the init files in data/phase_changes/sam
+# since these should be identical either way - it's just the fp method that changes
+
+time snakemake -pr -s analysis/phase_changes/phase_change_nuclear.smk --cores 12
+```
+
+next up worth investigating - what is up with read pairs that `filter` considers
+phase changes but which are later deemed `no_phase_change`? what causes this? 
+
+```python
+import readcomb.classification as rc
+from tqdm import tqdm
+
+bam_fname = 'data/phase_changes/sam/2344x1952.init.sam'
+vcf_fname = 'data/genotyping/vcf_filtered/2344x1952.vcf.gz'
+
+reader = rc.pairs_creation(bam_fname, vcf_fname)
+
+weird = []
+for pair in tqdm(reader):
+    pair.classify(masking=0, quality=0)
+    if pair.call == 'no_phase_change':
+        weird.append(pair)
+    if len(weird) == 10:
+        break
+
+x = weird[0]
+
+>>> print(x)
+Record name: A00516:220:H2NGGDRXY:1:2101:1217:32565
+Read1: chromosome_16:1090803-1090877
+Read2: chromosome_16:1090826-1091076
+VCF: data/genotyping/vcf_filtered/2344x1952.vcf.gz
+Unmatched Variant(s): False
+Condensed: [['CC1952', 1090803, 1091076]]
+Call: no_phase_change
+Condensed Masked: [['CC1952', 1090803, 1091076]]
+Masked Call: no_phase_change
+Midpoint: ('chromosome_16:1090939', -1)
+Variants Per Haplotype: 9.0
+Variant Skew: -1
+Gene Conversion Length: N/A
+Min Variants In Haplotype: -1
+Mismatch/Variant Ratio: 1.7777777777777777
+
+>>> x.detection
+[('2', 1090814, 'A', 37), ('2', 1090825, 'G', 37), ('2', 1090835, 'C', 37), 
+('2', 1090938, 'T', 11), ('2', 1090940, 'A', 37), ('2', 1091003, 'T', 37), 
+('2', 1091062, 'C', 37), ('2', 1091064, 'T', 25), ('2', 1091065, 'G', 37)]
+
+# and now to check against the readcomb filter algorithm
+from readcomb.filter import cigar, qualities_cigar, phase_detection
+import argparse
+
+parser = argparse.ArgumentParser
+parser.quality = 0
+
+>>> phase_detection(x.variants_1, cigar(x.rec_1), x.rec_1, parser)
+['2', '2', '2', '2']
+
+>>> phase_detection(x.variants_2, cigar(x.rec_2), x.rec_2, parser)
+['2', '1', '2', '2', '2', '2', '2', '2'] # weird! 
+
+# looks like was an overlap issue
+>>> rc.downstream_phase_detection(x.variants_1, cigar(x.rec_1), x.rec_1, 0)
+[('2', 1090814, 'A', 37), ('2', 1090825, 'G', 37), ('2', 1090835, 'C', 37), ('2', 1090840, 'G', 37)]
+
+>>> rc.downstream_phase_detection(x.variants_2, cigar(x.rec_2), x.rec_2, 0)
+[('2', 1090835, 'C', 37), ('1', 1090840, 'C', 11), ('2', 1090938, 'T', 11), 
+('2', 1090940, 'A', 37), ('2', 1091003, 'T', 37), ('2', 1091062, 'C', 37), 
+('2', 1091064, 'T', 25), ('2', 1091065, 'G', 37)]
+# see site 1090840
+
+# is this consistently the case? 
+x = weird[1]
+>>> rc.downstream_phase_detection(x.variants_1, cigar(x.rec_1), x.rec_1, 0)
+[('2', 4393536, 'T', 25), ('2', 4393542, 'T', 37), ('2', 4393575, 'G', 37), 
+('2', 4393576, 'C', 37), ('2', 4393582, 'G', 37), ('2', 4393620, 'A', 37), 
+('2', 4393636, 'G', 37), ('2', 4393640, 'G', 37), ('2', 4393657, 'C', 37), 
+('2', 4393678, 'G', 37), ('2', 4393688, 'A', 37), ('2', 4393717, 'G', 25), ('2', 4393718, 'A', 37)]
+>>> rc.downstream_phase_detection(x.variants_2, cigar(x.rec_2), x.rec_2, 0)
+# see last record on first line
+[('2', 4393536, 'T', 37), ('2', 4393542, 'T', 37), ('2', 4393575, 'G', 37), ('1', 4393576, 'G', 11), 
+('2', 4393582, 'G', 37), ('2', 4393620, 'A', 37), ('2', 4393636, 'G', 37), ('2', 4393640, 'G', 37), 
+('2', 4393657, 'C', 37), ('2', 4393678, 'G', 37), ('2', 4393688, 'A', 37), ('2', 4393717, 'G', 37), 
+('2', 4393718, 'A', 25)]
+
+# let's iterate through the file and see if there's a `no_phase_change` outside of an overlap read
+reader = rc.pairs_creation(bam_fname, vcf_fname)
+more_weird = []
+for pair in tqdm(reader):
+    pair.classify(masking=0, quality=0)
+    if pair.call == 'no_phase_change' and not pair.overlap:
+        more_weird.append(pair)
+        print('got one')
+    if len(more_weird) == 10:
+        break # took 8250 iterations to find 10
+
+# seems all of these end in a single N variant - which is bugging out the creation of of Pair.condensed
+# let's do a quick check to see whether Ns and overlaps explain it all:
+
+most_weird = []
+reader = rc.pairs_creation(bam_fname, vcf_fname)
+for pair in tqdm(reader):
+    pair.classify(masking=0, quality=0)
+    if pair.call == 'no_phase_change' and not pair.overlap and not pair.no_match:
+        most_weird.append(pair)
+        print('got one')
+    if len(most_weird) == 10:
+        break # took 107000 iterations over 14 min to find 10
+```
+
+## 14/8/2022
+
+figured it out - `Pair._create_condensed` needs to have a separate
+copy of `detection` that ignores all Ns (explains `more_weird`) and
+I need to add a stipulation that the 'false haps' where start = end in 
+detection are only removed if the reads overlap (since otherwise 
+single base pair haps caused by the read starting with two variants
+are removed)
+
+redoing readcomb-fp, because of course - 
+
+```bash
+# going to move the previous files elsewhere for now
+mkdir -p data/phase_changes/midpoint_temp/
+mv -v data/phase_changes/sam/*filtered.sam data/phase_changes/midpoint_temp/
+mv -v data/phase_changes/fp_bed/* data/phase_changes/midpoint_temp/
+mv -v data/phase_changes/event_summaries/* data/phase_changes/midpoint_temp/
+
+rm -v data/phase_changes/bam/*
+
+time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 8
+```
+
+and same goes for the nuclear filtering stuff:
+
+```bash
+# in data/phase_changes/nuclear
+mkdir nuclear_temp
+mv -v sam/*filtered.sam nuclear_temp/
+mv -v fp_bed/* nuclear_temp/
+mv -v event_summaries/* nuclear_temp/
+
+rm -v bam/*
+
+# back to root
+time snakemake -pr -s analysis/phase_changes/phase_change_nuclear.smk --cores 8
+```
+
+## 15/8/2022
+
+both done in 2 hours! not so bad - not sure why I didn't run these in parallel
+on snakemake sooner
+
+exporting the logs to compare midpoint vs nuclear filtering, as well as the output
+of `summarise_cross`, in an Rmd
 
 
 
