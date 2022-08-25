@@ -2543,8 +2543,67 @@ on snakemake sooner
 exporting the logs to compare midpoint vs nuclear filtering, as well as the output
 of `summarise_cross`, in an Rmd
 
+## 16/8/2022
 
+today - going to run `summarise_cross` on the parents as well to make
+sense of why some have more false phase changes than others:
 
+```bash
+# new rule that generates these in data/phase_changes/parental_event_summaries
+time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 12
+```
+
+## 18/8/2022
+
+today - need to implement one extra quality metric that specifies whether
+a read would have been removed by the nuclear filter or not (e.g. if it 
+overlaps a false phase change read at all, even if the phase change itself doesn't
+actually match - since we're sticking to the midpoint option) 
+
+after that, going to go back to labelling events to then train a model on
+
+quick test:
+
+```bash
+python analysis/phase_changes/summarise_cross.py \
+--bam data/phase_changes/sam/2343x1691.filtered.sam \
+--vcf data/genotyping/vcf_filtered/2343x1691.vcf.gz \
+--false_bed data/phase_changes/nuclear/fp_bed/2343x1691.nuclear.bed.gz \
+--mask_size 75 --processes 12 --mapq 0 --base_qual 0 \
+--out sc_test.tsv
+```
+
+looks good - let's clear out `data/phase_changes/event_summaries`, update the workflow,
+and regen these files
+
+```bash
+time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 12
+```
+
+## 24/8/2022
+
+coming back to this just to add a `min_phase_change_var_qual` attribute to `summarise_cross`
+
+testing:
+
+```bash
+python analysis/phase_changes/summarise_cross.py \
+--bam data/phase_changes/sam/2343x1691.filtered.sam \
+--vcf data/genotyping/vcf_filtered/2343x1691.vcf.gz \
+--false_bed data/phase_changes/nuclear/fp_bed/2343x1691.nuclear.bed.gz \
+--mask_size 75 --processes 12 --mapq 0 --base_qual 0 \
+--out sc_test.tsv
+```
+
+looks good - let's do this again -
+
+```bash
+# clearing old ones and doing this again
+rm -v data/phase_changes/event_summaries/
+time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 12
+```
+
+and then going to take this offline so I can use my labels with it
 
 
 
