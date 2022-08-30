@@ -2,13 +2,21 @@
 biased_seg.py - get counts of reads matching either ancestor across windows
 """
 
+import time
+import sys
+import os
+import re
 import csv
-import argparse
 import math
+import subprocess
+import argparse
 import numpy as np
+import pandas as pd
 import pysam
 import readcomb.classification as rc
+from io import BytesIO
 from multiprocessing import Queue
+from multiprocessing import JoinableQueue
 from multiprocessing import Process
 from tqdm import tqdm
 
@@ -25,6 +33,8 @@ def arg_parser():
         type=int, help='Windowsize (default 1000)')
     parser.add_argument('-q', '--base_qual', required=False, default=0,
         type=int, help='Base qual filter (default 0)')
+    parser.add_argument('-m', '--mapq', required=False, default=0,
+        type=int, help='MAPQ filter (default 0)')
     parser.add_argument('-p', '--processes', required=False, default=1,
         type=int, help='Number of processes (default 1)')
     parser.add_argument('-o', '--out', required=True,
@@ -82,7 +92,7 @@ def create_array_set(lengths, window_size):
 
 
 class Processor(Process):
-    def __init__(self, input_queue, counter_queue, lengths, args, p_id, **kwargs):
+    def __init__(self, input_queue, counter_queue, output_queue, lengths, args, p_id, **kwargs):
         """
         inherited from multiprocessing.Process
 
@@ -103,22 +113,40 @@ class Processor(Process):
         self.p_id = p_id # TODO: not sure I need this here
         self.header = pysam.AlignmentFile(args.bam, 'r').header
         self.lengths = lengths
-        self.parent1_arrays = create_array_set(lengths)
-        self.parent2_arrays = create_array_set(lengths)
-        self.removed_arrays = create_array_set(lengths)
-        self.failed_mapq = create_array_set(lengths)
+        self.parent1_arrays = create_array_set(lengths, self.args.window_size)
+        self.parent2_arrays = create_array_set(lengths, self.args.window_size)
+        self.removed_arrays = create_array_set(lengths, self.args.window_size)
+        self.failed_mapq = create_array_set(lengths, self.args.window_size)
+        self.parents = re.search('[GB0-9]{4,5}x[0-9]{4}', self.args.bam).group(0).split('x')
 
     def run(self):
+        proc_count = 0
         current_pair = self.input_queue.get(block=True)
         while current_pair:
             self.counter_queue.put(1) # increment counter
             record_1 = pysam.AlignedSegment.fromstring(current_pair[0], self.header)
             record_2 = pysam.AlignedSegment.fromstring(current_pair[1], self.header)
 
-            pair = Pair(record_1, record_2, self.args.vcf)
+            pair = rc.Pair(record_1, record_2, self.args.vcf)
             pair.classify(masking=0, quality=self.args.base_qual)
             chrom = pair.rec_1.reference_name
-            window = int(pair.midpoint.split(':')[1])
+            window = math.floor(int(pair.midpoint.split(':')[1]) / self.args.window_size)
+            haps = list(set([sample for sample, _, _ in pair.condensed]))
+
+            # ignore reads on contigs
+            # these aren't tracked, so no arrays to update
+            if pair.rec_1.reference_name not in lengths.keys():
+                current_pair = self.input_queue.get(block=True)
+                continue
+
+            # ignore recombinant reads and reads with no variants
+            if (
+                pair.call != 'no_phase_change' or 
+                len(haps) == 0
+            ):
+                self.removed_arrays[chrom][window] += 1
+                current_pair = self.input_queue.get(block=True)
+                continue
 
             # mapq filter if provided
             if all([pair.rec_1.mapq < self.args.mapq, pair.rec_2.mapq < self.args.mapq]):
@@ -126,23 +154,12 @@ class Processor(Process):
                 current_pair = self.input_queue.get(block=True)
                 continue
 
-            # ignore recombinant reads, reads with no variants, and reads on contigs
-            if (
-                pair.call != 'no_phase_change' or 
-                len(pair.detection) == 0 or
-                pair.rec_1.query_name not in lengths.keys()
-            ):
-                self.removed_arrays[chrom][window] += 1
-                current_pair = self.input_queue.get(block=True)
-                continue
-
-            elif pair.call == 'no_phase_change':
-                hap = list(set([hap for hap, _, _, _ in pair.detection if hap != 'N']))[0]
-                assert len(hap) == 1
-                window = math.floor(int(pair.midpoint.split(':')[1]) / self.args.window_size)
-                if hap == '1':
+            if pair.call == 'no_phase_change':
+                assert len(haps) == 1
+                hap = haps[0]
+                if hap == self.parents[0]:
                     self.parent1_arrays[record_1.reference_name][window] += 1
-                elif hap == '2':
+                elif hap == self.parents[1]:
                     self.parent2_arrays[record_1.reference_name][window] += 1
                 current_pair = self.input_queue.get(block=True)
                 continue
@@ -165,7 +182,7 @@ class Counter(Process):
         self.lengths = lengths
     
     def run(self):
-        stats = subprocess.check_output(['samtools', 'idxstats', args.bam])
+        stats = subprocess.check_output(['samtools', 'idxstats', self.args.bam])
         stats_table = pd.read_csv(
             BytesIO(stats), sep='\t',
             names=['chrom', 'length', 'map_reads', 'unmap_reads'])
@@ -210,16 +227,19 @@ def biased_seg_parallel(args, lengths):
 
     count_input = Queue()
     counter = Counter(count_input, args, lengths, daemon=True)
+    counter.start()
 
+    # input_queue = Queue(maxsize=1000)
     for i in range(args.processes):
-        input_queue = Queue()
+        input_queue = Queue(maxsize=1000)
         input_queues.append(input_queue)
         output_queue = Queue()
         processes.append(
             Processor(input_queue=input_queue,
                 output_queue=output_queue,
                 counter_queue=count_input,
-                args=args, p_id=i, daemon=True))
+                lengths=lengths, args=args, 
+                p_id=i, daemon=True))
         processes[i].start()
 
     print(f'[rcmb] {len(processes)} processes created')
@@ -227,6 +247,7 @@ def biased_seg_parallel(args, lengths):
     bam = pysam.AlignmentFile(args.bam, 'r')
     prev_record = None
     process_idx = 0
+    placed_count = 0
 
     for record in bam:
         if not prev_record:
@@ -236,25 +257,31 @@ def biased_seg_parallel(args, lengths):
                 raise ValueError(f'read {record.query_name} not paired')
 
             pair = [prev_record.to_string(), record.to_string()]
-            input_queues[process_idx].put(pair)
-
-            if process_idx < args.processes - 1:
-                process_idx += 1
-            else:
-                process_idx = 0
+            input_queues[process_idx].put(pair, block=True)
+            placed_count += 1
+            if placed_count == 1000:
+                if process_idx < args.processes - 1:
+                    process_idx += 1
+                else:
+                    process_idx = 0
+                processes[process_idx].join(timeout=15)
+                placed_count = 0
             prev_record = None
 
     # close processes
     for i, _ in enumerate(processes):
+        # input_queue.put(None)
         input_queues[i].put(None)
         input_queues[i].close()
         processes[i].join()
+    input_queue.close()
 
     count_input.put(None)
     count_input.close()
     counter.join()
 
     # merge arrays
+    print('[rcmb] concatenating arrays...')
     def concat_arrays(main_array_set, current_array_set):
         out_array_set = {}
         # elementwise addition for each chrom array
@@ -262,10 +289,10 @@ def biased_seg_parallel(args, lengths):
             out_array_set[chrom] = main_array_set[chrom] + current_array_set[chrom]
         return out_array_set
 
-    parent1_all = create_array_set(lengths)
-    parent2_all = create_array_set(lengths)
-    removed_all = create_array_set(lengths)
-    failed_mapq_all = create_array_set(lengths)
+    parent1_all = create_array_set(lengths, args.window_size)
+    parent2_all = create_array_set(lengths, args.window_size)
+    removed_all = create_array_set(lengths, args.window_size)
+    failed_mapq_all = create_array_set(lengths, args.window_size)
 
     for out_queue in output_queues:
         parent1_arrays, parent2_arrays, removed, failed_mapq = out_queue.get()
@@ -282,7 +309,8 @@ def biased_seg_parallel(args, lengths):
         writer = csv.DictWriter(f, delimiter='\t', fieldnames=fieldnames)
         writer.writeheader()
 
-        for chrom in lengths:
+        print('[rcmb] writing to file...')
+        for chrom in tqdm(lengths):
             windows = range(0, lengths[chrom], args.window_size)
             for i, window_start in enumerate(windows):
                 window_end = window_start + args.window_size \
