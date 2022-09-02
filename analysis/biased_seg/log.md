@@ -146,4 +146,28 @@ I feel like this should be a 'solved' problem - but I guess I need to keep readi
 switching it up - going to be doing this with `multiprocessing.Pool` instead since
 that combines the queue and process stages of this
 
+## 30/8/2022
+
+first pass at the pool implementation done - let's give this a go -
+
+```bash
+time python analysis/biased_seg/biased_seg_pool.py \
+--bam data/alignments/bam_prepped/2343x1691.sorted.bam \
+--vcf data/genotyping/vcf_filtered/2343x1691.vcf.gz \
+--window_size 2000 \
+--base_qual 20 \
+--mapq 1 \
+--processes 4 \
+--out biased_seg_test.tsv
+```
+
+after a few hours of very angry debugging this is a go! the magic trick was
+using `maxtasksperchild` when initializing the pool, and not setting a
+chunksize at all
+
+also used `touch` on all the bam indices in `bam_prepped` just to stop the constant
+barrage of stderr yelling about how the index was older
+
+going to let this run - if this looks good, will then workflow it up with snakemake! 
+
 
