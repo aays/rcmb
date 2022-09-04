@@ -2605,6 +2605,164 @@ time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 
 
 and then going to take this offline so I can use my labels with it
 
+## 29/8/2022
+
+today - checking to see whether a suspected bug in `summarise_cross` is as problematic
+as I think it is - it seems the last pair is being ignored, which means if there were
+n processes that n pairs have been excluded
+
+let's just run an example but with 12 processes and then 16 - 
+
+```bash
+python analysis/phase_changes/summarise_cross.py \
+--bam data/phase_changes/sam/2343x1691.filtered.sam \
+--vcf data/genotyping/vcf_filtered/2343x1691.vcf.gz \
+--false_bed data/phase_changes/nuclear/fp_bed/2343x1691.nuclear.bed.gz \
+--mask_size 75 --processes 12 --mapq 0 --base_qual 0 \
+--out sc_test_12.tsv
+
+python analysis/phase_changes/summarise_cross.py \
+--bam data/phase_changes/sam/2343x1691.filtered.sam \
+--vcf data/genotyping/vcf_filtered/2343x1691.vcf.gz \
+--false_bed data/phase_changes/nuclear/fp_bed/2343x1691.nuclear.bed.gz \
+--mask_size 75 --processes 16 --mapq 0 --base_qual 0 \
+--out sc_test_16.tsv
+
+# if this bug is legit these should have different line counts
+wc -l sc_test_12.tsv # 34129
+wc -l sc_test_16.tsv # 34129
+# looks alright! 
+```
+
+next up - trying to figure out why some crossovers are being ignored by `summarise_cross` -
+I had a previously labelled set of crossovers from 2343x1952 but they seem to be missing
+
+```bash
+python analysis/phase_changes/summarise_cross.py \
+--bam data/phase_changes/sam/2343x1952.filtered.sam \
+--vcf data/genotyping/vcf_filtered/2343x1952.vcf.gz \
+--false_bed data/phase_changes/nuclear/fp_bed/2343x1952.nuclear.bed.gz \
+--mask_size 75 --processes 12 --mapq 0 --base_qual 0 \
+--out sc_test.tsv
+```
+
+what on earth?
+
+```
+$ wc -l sc_test.tsv
+36994 sc_test.tsv
+
+hasans11@hpcnode1 /research/projects/chlamydomonas/genomewide_recombination/rcmb (work)
+$ wc -l data/phase_changes/event_summaries/2343x1952.75.tsv
+36994 data/phase_changes/event_summaries/2343x1952.75.tsv
+
+hasans11@hpcnode1 /research/projects/chlamydomonas/genomewide_recombination/rcmb (work)
+$ grep -c 'A00516:220:H2NGGDRXY:2:2120:4029:9377' sc_test.tsv
+1
+
+hasans11@hpcnode1 /research/projects/chlamydomonas/genomewide_recombination/rcmb (work)
+$ grep -c 'A00516:220:H2NGGDRXY:2:2120:4029:9377' data/phase_changes/event_summaries/2343x1952.75.tsv
+0
+```
+
+same number of events? but only one has the read of interest? 
+
+I have no idea what's going on - but let's delete this file and get snakemake to regen it
+before testing again
+
+```bash
+hasans11@hpcnode1 /research/projects/chlamydomonas/genomewide_recombination/rcmb (work)
+$ grep -c 'A00516:220:H2NGGDRXY:2:2102:13928:3317' data/phase_changes/event_summaries/2343x1952.75.tsv
+1
+
+# looks good now??
+```
+
+let's just rerun all of these to be on the safe side
+
+```bash
+rm -v data/phase_changes/event_summaries/*tsv
+snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 12
+```
+
+## 3/9/2022
+
+today - trying to get tandem repeats finder working
+
+looks like I need parental fastas for this, which were otherwise generated in
+`analysis/ldhelmet` - let's give this a go for a file that contains one
+chrom across all parents:
+
+```bash
+time ./bin/trf data/ldhelmet/fasta_chrom/NA1.chromosome_01.fa \
+2 7 7 80 10 500 -d
+```
+
+alright! so this keeps doing this thing where it saves repeats in intermediate files,
+deletes them all at the end, and then proudly proclaims there are no repeats
+
+going to switch over to a tool called ULTRA - will need to mount a docker image for this:
+
+```bash
+mkdir analysis/tandem_repeats/
+# in the above folder - using the globally installed singularity exec
+singularity build ultra docker://traviswheelerlab/ultra
+singularity run ultra_latest.sif # looks good
+```
+
+testing on a fasta -
+
+```bash
+# need absolute paths for this to work
+time singularity exec --bind /research/projects/chlamydomonas/genomewide_recombination/rcmb/data/ldhelmet/fasta_chrom/:\
+/research/projects/chlamydomonas/genomewide_recombination/rcmb/analysis/tandem_repeats/mnt \
+analysis/tandem_repeats/ultra.sif \
+ultra -f test.json -at 0.36 \ # GC content
+-s 9 data/ldhelmet/fasta_chrom/NA2.chromosome_01.fa # -s is score threshold
+```
+
+## 4/9/2022
+
+looks good - checking to see whether I can parse this in python - 
+
+```python
+import json
+with open('test.json', 'r') as f:
+    reader = json.load(f)
+    x = reader['Repeats'][0]
+print(x) # prints first line as dict
+```
+
+this can be pretty easily converted to a tsv then -
+
+```python
+import json
+import csv
+from tqdm import tqdm
+
+with open('test.json', 'r') as f_in:
+    with open('test_converted.tsv', 'r') as f_out:
+        reader = json.load(f_in)
+        fieldnames = list(reader['Repeats'][0].keys())
+        writer = csv.DictWriter(f_out, delimiter='\t', fieldnames=fieldnames)
+        writer.writeheader()
+        
+        for record in tqdm(reader['Repeats']):
+            writer.writerow(record)
+```
+
+this looks good - but I need to convert these into tabix-able files for `summarise_cross` to
+get metrics for each pair as needed
+
+going to continue this in `analysis/tandem_repeats/log.md`
+            
+
+
+
+
+
+
+
 
 
 
