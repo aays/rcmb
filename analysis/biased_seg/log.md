@@ -170,4 +170,12 @@ barrage of stderr yelling about how the index was older
 
 going to let this run - if this looks good, will then workflow it up with snakemake! 
 
+## 2/9/2022
+
+giving this a first pass:
+
+```bash
+time snakemake -pr -s analysis/biased_seg/biased_seg_calc.smk --cores 16
+```
+
 

@@ -109,8 +109,13 @@ def examine_pair(current_pair, lengths, args, header):
     pair = rc.Pair(record_1, record_2, args.vcf)
     pair.classify(masking=0, quality=args.base_qual)
     haps = list(set([sample for sample, _, _ in pair.condensed]))
-    parents = re.search('[GB0-9]{4,5}x[0-9]{4}', args.bam).group(0).split('x')
-    parents = ['CC' + parent for parent in parents if not parent.startswith('GB')]
+    parents_init = re.search('[GB0-9]{4,5}x[0-9]{4}', args.bam).group(0).split('x')
+    parents = []
+    for i, parent in enumerate(parents_init):
+        if not parent.startswith('GB'):
+            parents.append('CC' + parent)
+        else:
+            parents.append(parent)
 
     chrom = pair.rec_1.reference_name
     window = math.floor(int(pair.midpoint.split(':')[1]) / args.window_size)
