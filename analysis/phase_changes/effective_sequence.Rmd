@@ -1,0 +1,377 @@
+---
+title: "Effective lengths"
+author: Ahmed Hasan
+output: pdf_document
+---
+
+# Package import
+
+```{r}
+library(tidyverse)
+library(fs)
+library(here)
+```
+
+# Data import
+
+```{r}
+read_counts = read_tsv(here('data/callability/read_counts.tsv'), col_types = cols())
+read_lengths = read_tsv(here('data/callability/read_lengths.tsv'), col_types = cols())
+nuclear_blocked = read_tsv(here('data/callability/nuclear_blocked.tsv'), col_types = cols())
+effective_seq = read_tsv(here('data/callability/effective_sequence.tsv'), col_types = cols())
+snp_tracts = read_tsv(here('data/callability/tract_distribution.tsv'), col_types = cols())
+```
+
+# Distributions
+
+## Distribution of read lengths
+
+Overall:
+
+```{r}
+read_lengths %>% 
+  group_by(effective_length) %>% 
+  summarise(count = sum(count)) %>% 
+  
+  ggplot(aes(x = effective_length, y = count)) +
+  geom_bar(stat = 'identity', color = 'grey', fill = 'white') +
+  theme_minimal() +
+  scale_y_continuous(labels = scales::comma)
+```
+
+Grouped in bins of 10 -
+
+```{r}
+read_lengths %>% 
+  mutate(eff_length_bin = floor(effective_length / 10) * 10) %>% 
+  group_by(eff_length_bin) %>% 
+  summarise(count = sum(count)) %>% 
+  
+  ggplot(aes(x = eff_length_bin, y = count)) +
+  geom_bar(stat = 'identity', color = 'black', fill = 'white') +
+  theme_minimal()
+  
+```
+
+Grouped in bins of 10, by cross:
+
+```{r}
+read_lengths %>% 
+  mutate(eff_length_bin = floor(effective_length / 10) * 10) %>% 
+  group_by(sample, eff_length_bin) %>% 
+  summarise(count = sum(count)) %>% 
+  
+  ggplot(aes(x = eff_length_bin, y = count)) +
+  geom_bar(stat = 'identity', color = 'grey', fill = 'white') +
+  geom_vline(xintercept = 500, linetype = 'dashed') +
+  theme_minimal() +
+  facet_wrap(~ sample)
+  
+```
+
+## Effective sequence
+
+How much fewer sequence do we have than expected?
+
+Assuming the effective sequence for each read pair should have been 550 bp
+
+```{r}
+read_counts %>% 
+  mutate(max_eff_seq = read_count * 550) %>% 
+  left_join(effective_seq, by = 'sample') %>% 
+  mutate(equiv_reads = sum_seq / 550) %>% 
+  mutate(seq_kept_perc = sum_seq / max_eff_seq) %>% 
+  arrange(desc(max_eff_seq))
+  
+```
+
+How does this compare with the amount of sequence removed by nuclear filtering?
+
+
+## Nuclear filtering
+
+How much is filtered out for each strain?
+
+```{r}
+nuclear_blocked %>% 
+  filter(cross != '3071x2931', cross != '3071x3062') %>% 
+  select(cross, blocked_seq) %>% 
+  separate(cross, into = c('parent1', 'parent2'), sep = 'x') %>% 
+  pivot_wider(
+    id_cols = parent1,
+    names_from = parent2,
+    values_from = blocked_seq)
+```
+
+Creating a heatmap of these values:
+
+```{r}
+nuclear_blocked %>% 
+  filter(cross != '3071x2931', cross != '3071x3062') %>% 
+  select(cross, blocked_seq) %>% 
+  separate(cross, into = c('parent1', 'parent2'), sep = 'x') %>% 
+  
+  ggplot(aes(x = parent1, y = parent2, fill = blocked_seq)) +
+  geom_tile() +
+  theme_classic() +
+  scale_fill_continuous(type = 'viridis')
+```
+
+# SNP tracts
+
+Going to plot SNP tract length distributions + read length distributions to get a picture of what's
+callable and what isn't
+
+```{r}
+# just for one cross for now
+read_lengths %>% 
+  filter(sample == '2343x1691')
+
+snp_tracts %>% 
+  filter(cross == '2343x1691')
+
+ggplot() +
+  geom_bar(
+    data = read_lengths %>% 
+      filter(sample == '2343x1691') %>% 
+      rename(length = effective_length) %>% 
+      mutate(length_bin = floor(length / 10) * 10) %>% 
+      group_by(length_bin) %>% 
+      summarise(count = sum(count)),
+    aes(x = length_bin, y = count),
+    stat = 'identity',
+    color = 'black', fill = 'light blue',
+    alpha = 0.5
+  ) +
+  geom_bar(
+    data = snp_tracts %>% 
+      filter(cross == '2343x1691') %>% 
+      rename(length = tract_length) %>% 
+      mutate(length_bin = floor(length / 10) * 10) %>% 
+      group_by(length_bin) %>% 
+      summarise(count = sum(count)),
+    aes(x = length_bin, y = count),
+    stat = 'identity',
+    color = 'black', fill = 'dark green',
+    alpha = 0.5
+  ) +
+  coord_cartesian(
+    x = c(0, 2000),
+    y = c(0, 1000)
+  )
+```
+
+Looks like that point where the distribution of tract sizes _just_ eclipses the equivalent read
+length bar is our cutoff -
+
+```{r}
+ggplot() +
+  geom_bar(
+    data = read_lengths %>% 
+      filter(sample == '2343x1691') %>% 
+      rename(length = effective_length) %>% 
+      mutate(length_bin = floor(length / 10) * 10) %>% 
+      group_by(length_bin) %>% 
+      summarise(count = sum(count)),
+    aes(x = length_bin, y = count),
+    stat = 'identity',
+    color = 'black', fill = 'light blue',
+    alpha = 0.5
+  ) +
+  geom_bar(
+    data = snp_tracts %>% 
+      filter(cross == '2343x1691') %>% 
+      rename(length = tract_length) %>% 
+      mutate(length_bin = floor(length / 10) * 10) %>% 
+      group_by(length_bin) %>% 
+      summarise(count = sum(count)),
+    aes(x = length_bin, y = count),
+    stat = 'identity',
+    color = 'black', fill = 'dark green',
+    alpha = 0.5
+  ) +
+  coord_cartesian(
+    x = c(500, 1000),
+    y = c(0, 1000)
+  )
+```
+
+Let's find that programmatically:
+
+```{r}
+snps_reads_all = snp_tracts %>% 
+  rename(length = tract_length,
+         tract_count = count) %>% 
+  left_join(
+    read_lengths %>% 
+      rename(length = effective_length,
+             cross = sample,
+             read_count = count),
+    by = c('cross', 'length')
+  )
+
+snps_reads_all
+```
+
+Looking for the first instance where counts at a SNP tract outpace counts of equivalent reads:
+
+```{r}
+snps_reads_all %>% 
+  filter(cross == '2343x1691') %>% 
+  mutate(higher = tract_count > read_count)
+
+```
+
+Need to get first instance of TRUE after FALSEs - quick proxy would be over
+length of 500 - below that is the left tail of distribution
+
+```{r}
+snps_reads_all %>% 
+  filter(cross == '2343x1691', length > 500) %>% 
+  mutate(higher = tract_count > read_count) %>% 
+  mutate(true_count = cumsum(higher)) # this works! when the value is 1 we have our first instance
+```
+
+Expanding this to all crosses:
+
+```{r}
+snps_reads_limits = snps_reads_all %>% 
+  filter(length > 500) %>% 
+  group_by(cross) %>%
+  mutate(higher = tract_count > read_count) %>% 
+  mutate(true_count = cumsum(higher)) %>% 
+  filter(true_count == 1) %>% 
+  
+  # sometimes we have another false after the true
+  filter(length == min(length)) %>% 
+  
+  # keep this as a lookup
+  select(cross, limit = length)
+
+snps_reads_limits
+```
+
+Using this to get the amount of sequence that's uncallable:
+
+```{r}
+snps_reads_all %>% 
+  left_join(snps_reads_limits, by = 'cross') %>% 
+  group_by(cross) %>% 
+  mutate(total_cross_sequence = sum(sequence_length)) %>% 
+  filter(length >= limit) %>% # only keep rows where tract length is above that limit
+  
+  summarise(sequence_above_limit = sum(sequence_length), 
+            total_cross_sequence = mean(total_cross_sequence)) %>% # used mean but should just be one value
+  mutate(callable_perc = 1 - (sequence_above_limit / total_cross_sequence))
+```
+
+Another option - phrase this in terms of the percent of tracts of length L that
+are callable - eg just `read_count` / `tract_count` above ~350 or some arbitrary
+mean/median read length threshold
+
+Tracts of very small sizes (e.g. 1-100) are likely to way outnumber the number
+of reads, but that's not relevant since those tracts are definitely going to be
+callable provided any coverage at all
+
+```{r}
+snps_reads_all %>% 
+  filter(length > 350) %>% 
+  
+  # get perc per bin
+  mutate(
+    tract_perc_callable = read_count / tract_count
+  ) %>% 
+  mutate( # if above 100 - just set to 100
+    tract_perc_callable = ifelse(tract_perc_callable > 100, 100, tract_perc_callable)
+  )
+```
+
+Let's get the fraction of reads vs total reads that match each tract length:
+
+```{r}
+snps_reads_bin_10 = snps_reads_all %>% 
+  # bins of 10 to make it a bit more manageable
+  mutate(length_bin = floor(length / 10) * 10) %>% 
+  group_by(cross, length_bin) %>% 
+  select(-length) %>% 
+  summarise_if(is.numeric, sum)
+
+snps_reads_bin_10
+
+snps_reads_bin_10_perc = snps_reads_bin_10 %>% 
+  mutate(read_count = ifelse(is.na(read_count), 0, read_count)) %>%
+  group_by(cross) %>% 
+  mutate(total_reads = sum(read_count)) %>% 
+  mutate(cumulative_read_count = cumsum(read_count)) %>% 
+  mutate(
+    read_perc = read_count / total_reads,
+    cumulative_read_perc = 1 - (cumulative_read_count / total_reads))
+  
+snps_reads_bin_10_perc
+
+```
+
+Plotting:
+
+```{r}
+snps_reads_bin_10_perc %>% 
+  filter(cross != '3071x2931', cross != '3071x3059') %>% 
+  ggplot(aes(x = length_bin, y = cumulative_read_perc)) +
+  geom_line() +
+  coord_cartesian(
+    x = c(0, 1000)
+  ) +
+  labs(
+    x = 'tract length (bp, 10 bp bin)',
+    y = 'perc of tracts covered by reads'
+  ) +
+  theme_classic() +
+  theme(
+    panel.grid.major = element_line(color = 'grey')
+  ) +
+  facet_wrap(~ cross)
+```
+
+Let's get a better estimate of which parts of the genome are uncallable instead
+of that simple cutoff above:
+
+Instead of a strict cutoff, for a given tract length L, if there are N tracts of
+of length L and N' reads of _at least_ length L, only N - N' tracts are actually
+uncallable, so:
+
+$$ \sum_{i=0}^{n_{tracts}} (N_i - N'_i) * L_i$$
+
+gives us the total amount of uncallable sequence over all tract lengths L
+
+Let's implement that here - I first need to get the 'at least length L' counts for each length:
+
+```{r}
+callable_frac = snps_reads_all %>% 
+  split(.$cross) %>% 
+  
+  map_dfr( 
+    ~ mutate(., read_count = ifelse(is.na(read_count), 0, read_count)) %>%
+      mutate(total_reads = sum(read_count), cumulative_reads = cumsum(read_count)) %>% 
+      mutate(reads_covering = total_reads - lag(cumulative_reads)) %>% 
+      filter(length != 0) %>%  # no need for 0 length
+      mutate(seq_uncallable = (tract_count - reads_covering) * length) %>% 
+      mutate(seq_uncallable = ifelse(seq_uncallable < 0, 0, seq_uncallable)) %>%  # values below 0 are just 0
+      group_by(cross) %>% 
+      summarise(
+        seq_uncallable = sum(seq_uncallable), 
+        total_cross_sequence = sum(sequence_length)) %>% 
+      mutate(
+        uncallable_frac = seq_uncallable / total_cross_sequence,
+        callable_frac = 1 - (seq_uncallable / total_cross_sequence)),
+    .id = 'cross'
+  )
+
+callable_frac
+```
+
+Writing to file:
+
+```{r}
+# write_tsv(callable_frac, here('data/callability/callable_frac.tsv'))
+```
+

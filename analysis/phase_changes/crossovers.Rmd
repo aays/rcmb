@@ -10,17 +10,19 @@ output: html_notebook
 library(tidyverse)
 library(fs)
 library(here)
+library(glmnet)
+library(boot) # for k-fold cross validation
 ```
 
 # Data import
 
 ```{r}
-fnames = dir_ls(here('data/phase_changes/nuclear/event_summaries_mapq'))
+fnames = dir_ls(here('data/phase_changes/event_summaries'))
 
 d_all = map(
   fnames,
   ~ read_tsv(., col_types = cols()) %>% 
-    filter(masked_call == 'cross_over') %>% 
+    filter(call == 'cross_over') %>% 
     mutate(
       indel_proximity = as.numeric(
         ifelse(indel_proximity == 'N/A', Inf, indel_proximity)
@@ -38,35 +40,1144 @@ names(d_all) = str_extract(fnames, '[GB0-9]{4,5}x[0-9]{4}')
 3. How many events passing quality thresholds are there?
 
 ```{r}
-# total events
-d_all %>% 
-  map_dfr(
-    ~ filter(., call == 'cross_over') %>% 
-      nrow(.)
-  ) %>% 
-  pivot_longer(
-    cols = everything(),
-    names_to = 'cross',
-    values_to = 'count') %>% 
-  arrange(desc(count))
-
-ggplot(aes(x = count)) +
-  geom_histogram()
-```
-
-```{r}
 # combinations of call and masked call
+
 d_all %>% 
   map_dfr(
-    ~ count(., call, masked_call),
+    ~ count(., call, masked_call) %>% 
+      filter(call == 'cross_over'),
     .id = 'cross'
   ) %>% 
-  arrange(desc(n)) %>% 
-  View()
+  arrange(desc(n))
 
-# does the number of reads scale by the level of overlap in reads?
-# calc overlap in reads
 ```
+
+# Creating a training set
+
+- Draw crossover events from each cross randomly
+- Ensure you have events that also aren't `masked_call == 'no_phase_change`
+  - these constitute the majority and are likely crap
+- Label crossover events after examining them in IGV
+- Train model using labels
+
+32 crosses - 30 COs from each makes for 960 (!) events - but it's likely that
+a lot of these are bad and will be done relatively quickly, so let's give that a go
+and see how things are afterwards
+
+Also still have ~150 TP COs and ~50 FP COs from 2344x1952 - can extend the dataset
+with these (although the pre-filtering of these events means they were bound to be
+higher quality)
+
+Drawing COs from each cross:
+
+```{r}
+set.seed(40)
+
+# let's get 15 per cross where call + masked call are both guaranteed CO
+co_draws = d_all %>% 
+  map_dfr(
+    ~ filter(., call == 'cross_over', masked_call == 'cross_over',
+             chromosome != 'mtDNA', chromosome != 'cpDNA') %>% 
+      slice_sample(n = 15, replace = FALSE),
+    .id = 'cross'
+  )
+
+# and then 15 more where just call is CO just to make sure these are also represented
+co_draws_unfiltered = d_all %>% 
+  map_dfr(
+    ~ filter(., call == 'cross_over',
+             chromosome != 'mtDNA', chromosome != 'cpDNA') %>% 
+      slice_sample(n = 15, replace = FALSE),
+    .id = 'cross'
+  )
+  
+# will check to see that we don't have the same call drawn twice, but that's extremely unlikely
+nrow(co_draws); nrow(co_draws_unfiltered)
+
+bind_rows(co_draws, co_draws_unfiltered) %>% 
+  distinct() %>% 
+  nrow() # should be 960 if no repeats
+
+# looks good
+co_draws_all = bind_rows(co_draws, co_draws_unfiltered) %>% 
+  arrange(cross, midpoint)
+
+co_draws_all
+
+# write_tsv(co_draws_all, here('data/phase_changes/co_draws_all.tsv'))
+```
+
+# Loading in labeled training set
+
+```{r}
+all_annotated = read_tsv(
+  here('data/phase_changes/cos_all_annotated.tsv'),
+  col_types = cols()) %>% 
+  mutate(
+    outer_bound = ifelse(outer_bound > 0.5, 1 - outer_bound, outer_bound),
+    rel_midpoint = ifelse(rel_midpoint > 0.5, 1 - rel_midpoint, rel_midpoint),
+    indel_proximity = ifelse(indel_proximity == -1, pmax(read1_length, read2_length), indel_proximity),
+    proximate_indel_length = ifelse(proximate_indel_length == -1, 0, proximate_indel_length),
+    false_overlap = factor(false_overlap),
+    indel_close = ifelse(indel_proximity <= 5, 1, 0),
+    parent1_microsat = factor(parent1_microsat, levels = c(0, 1)),
+    parent2_microsat = factor(parent2_microsat, levels = c(0, 1)),
+    parent1_microsat_score = ifelse(is.na(parent1_microsat_score), 0, parent1_microsat_score),
+    parent2_microsat_score = ifelse(is.na(parent2_microsat_score), 0, parent2_microsat_score),
+    parent1_microsat_log2_pval = ifelse(is.na(parent1_microsat_log2_pval), 0, parent1_microsat_log2_pval),
+    parent2_microsat_log2_pval = ifelse(is.na(parent2_microsat_log2_pval), 0, parent2_microsat_log2_pval),
+    parent1_microsat_proximity = ifelse(
+      is.na(parent1_microsat_proximity), pmax(read1_length, read2_length), parent1_microsat_proximity),
+    parent2_microsat_proximity = ifelse(
+      is.na(parent2_microsat_proximity), pmax(read1_length, read2_length), parent2_microsat_proximity),
+    min_base_qual_discrete = factor(
+      min_base_qual, levels = c('11', '25', '37'),
+      labels = c('11', '25', '37'), ordered = TRUE),
+    check = factor(check)) # make response variable discrete
+
+all_annotated
+
+all_annotated %>% 
+  count(check) 
+# previously 851 0, 196 1
+# now 884 0, 166 1
+```
+
+# A lasso approach
+
+## Model fit + training error rate
+
+```{r}
+set.seed(42)
+model_vars = all_annotated %>% 
+  select(-comments, -cross, -read_name, -chromosome, -midpoint, -call,
+         -start, -end, -mask_size, -masked_call, -detection, -gc_length)
+  # mutate(check = as.numeric(check))
+pred_matrix = model.matrix(check ~ .*., model_vars)
+outcome = model_vars$check
+
+# obtain lambda value
+cv_lasso = cv.glmnet(
+  pred_matrix, outcome, type.measure = 'deviance', alpha = 1, family = 'binomial')
+
+lasso_model = glmnet(
+  pred_matrix, outcome, family = 'binomial', 
+  alpha = 1, # lasso regression
+  lambda = cv_lasso$lambda)
+
+# get training probs - supply pred matrix
+lasso_training_probs = predict(
+  lasso_model, newx = pred_matrix, s = cv_lasso$lambda.min, type = 'response')
+
+# create vector of predictions
+lasso_training_preds = ifelse(lasso_training_probs > 0.4, 1, 0)
+
+# confusion matrix
+table(lasso_training_preds, all_annotated$check)
+
+mean(lasso_training_preds == all_annotated$check)
+
+# different thresholds
+for (threshold in seq(0.1, 0.9, 0.1)) {
+  print(paste('above', threshold, 'considered CO'))
+  preds = ifelse(lasso_training_probs > threshold, 1, 0)
+  print(table(preds, all_annotated$check))
+  print(mean(preds == all_annotated$check))
+  value_table = table(preds, all_annotated$check)
+  value_table_df = data.frame(value_table)
+  TN = value_table_df$Freq[1]
+  FP = value_table_df$Freq[2]
+  FN = value_table_df$Freq[3]
+  TP = value_table_df$Freq[4]
+  print(paste('model accuracy:', round(mean(preds == all_annotated$check), 3)))
+  print(
+    paste('sensitivity (TP / TP+FN):', round(TP / (TP+FN), 3))
+  )
+  print(
+    paste('specificity (TN / TN+FP):', round(TN / (TN+FP), 3))
+  )
+  print(paste('predicted COs are % actual COs:', round(TP / (TP+FP), 3)))
+  print(paste('% of actual COs kept:', round(TP / (TP+FN), 3)))
+  print('---')
+  cat('\n')
+  print('---')
+}
+
+# getting coefficients
+predict(lasso_model, type = 'coefficients', s = cv_lasso$lambda.min)
+```
+
+Labelling + exporting FPs and FNs - 
+
+```{r}
+# using 0.4 threshold
+lasso_training_preds = ifelse(lasso_training_probs > 0.4, 1, 0)
+# looking at these false negatives
+training_temp = all_annotated
+training_temp$prob = lasso_training_probs
+training_temp$pred = lasso_training_preds
+training_temp = training_temp %>% 
+  mutate(call_type = case_when(
+    pred == 1 & check == 1 ~ 'TP',
+    pred == 1 & check == 0 ~ 'FP',
+    pred == 0 & check == 1 ~ 'FN',
+    pred == 0 & check == 0 ~ 'TN'
+  )) %>% 
+  select(pred, prob, call_type, check, comments, cross, chromosome:min_base_qual_discrete, read_name)
+  
+
+# training_temp %>% 
+  # filter(call_type %in% c('FN', 'FP')) %>% 
+  # write_tsv(., here('data/phase_changes/false_review_updated.tsv'))
+
+```
+
+And looking at predictors across FPs and FNs:
+
+```{r}
+training_temp %>% 
+  # remove non-predictors
+  select(-read_name, -chromosome, -midpoint, -call, -pred, -prob, -check, -comments,
+         -cross, -start, -end, -mask_size, -masked_call, -detection, -gc_length) %>% 
+  # remove factors
+  select(-false_overlap, -parent1_microsat, -parent2_microsat, -min_base_qual_discrete) %>% 
+  pivot_longer(
+    cols = c(
+      'rel_midpoint', 'var_count', 'outer_bound', 'min_end_proximity', 'min_vars_in_hap',
+      'var_skew', 'mismatch_var_ratio', 'var_per_hap', 'indel_count', 'indel_proximity',
+      'proximate_indel_length', 'parent1_microsat_length', 'parent2_microsat_length',
+      'parent1_microsat_log2_pval', 'parent2_microsat_log2_pval', 'parent1_microsat_score',
+      'parent2_microsat_score', 'read1_mapq', 'read2_mapq', 'min_var_qual', 'min_var_depth',
+      'avg_diff_parental_gq', 'avg_hap_var_gq', 'avg_hap_var_depth', 'min_base_qual',
+      'mean_base_qual', 'min_phase_change_var_qual', 'read1_length', 'read2_length',
+      'effective_length', 'indel_close'
+    ),
+    names_to = 'metric',
+    values_to = 'value'
+  ) %>% 
+  
+  ggplot(aes(x = call_type, y = value)) +
+  geom_jitter(alpha = 0.5, width = 0.1) +
+  facet_wrap(~ metric, scale = 'free_y') +
+  labs(x = 'type', y = 'value') +
+  theme_classic() +
+  theme(
+    axis.title = element_text(size = 12, color = 'black', family = 'Helvetica'),
+    axis.text = element_text(size = 12, color = 'black', family = 'Helvetica'),
+    strip.text = element_text(size = 12, color = 'black', family = 'Helvetica')
+  )
+```
+
+Doing the same for the factors:
+
+```{r}
+training_temp %>% 
+  select(call_type, false_overlap, parent1_microsat, parent2_microsat, min_base_qual_discrete) %>% 
+  group_by(call_type) 
+
+```
+
+
+
+## Lasso train/test splits
+
+```{r}
+lasso_co_test = all_annotated %>% slice_sample(n = 210) # just under 20% of the data
+lasso_co_train = all_annotated %>% anti_join(lasso_co_test, by = 'read_name') # keep 80% for training
+
+train_model_vars = lasso_co_train %>% 
+  select(-comments, -cross, -read_name, -chromosome, -midpoint, -call,
+         -start, -end, -mask_size, -masked_call, -detection, -gc_length)
+  # mutate(check = as.numeric(check))
+pred_matrix = model.matrix(check ~ .*., train_model_vars)
+outcome = lasso_co_train$check
+
+# obtain lambda value
+cv_lasso = cv.glmnet(
+  pred_matrix, outcome, type.measure = 'deviance', alpha = 1, family = 'binomial')
+
+lasso_model = glmnet(
+  pred_matrix, outcome, family = 'binomial', 
+  alpha = 1, # lasso regression
+  lambda = cv_lasso$lambda.min)
+
+# get test probs - supply pred matrix
+test_model_vars = lasso_co_test %>% 
+  select(-comments, -cross, -read_name, -chromosome, -midpoint, -call,
+         -start, -end, -mask_size, -masked_call, -detection, -gc_length)
+test_pred_matrix = model.matrix(check ~ .*., test_model_vars)
+lasso_test_probs = predict(
+  lasso_model, newx = test_pred_matrix, s = cv_lasso$lambda.min, type = 'response')
+
+# create vector of predictions
+lasso_test_preds = ifelse(lasso_test_probs > 0.4, 1, 0)
+
+# confusion matrix
+table(lasso_test_preds, lasso_co_test$check)
+
+mean(lasso_test_preds == lasso_co_test$check)
+
+# different thresholds
+for (threshold in seq(0.1, 0.9, 0.1)) {
+  print(paste('above', threshold, 'considered CO'))
+  preds = ifelse(lasso_test_probs > threshold, 1, 0)
+  value_table = table(preds, lasso_co_test$check)
+  value_table_df = data.frame(value_table)
+  TN = value_table_df$Freq[1]
+  FP = value_table_df$Freq[2]
+  FN = value_table_df$Freq[3]
+  TP = value_table_df$Freq[4]
+  print(value_table)
+  print(paste('model accuracy:', mean(preds == lasso_co_test$check)))
+  print(
+    paste('sensitivity (TP / TP+FN):', round(TP / (TP+FN), 3))
+  )
+  print(
+    paste('specificity (TN / TN+FP):', round(TN / (TN+FP), 3))
+  )
+  print(paste('predicted COs are % actual COs:', round(TP / (TP+FP), 3)))
+  print(paste('% of actual COs kept:', round(TP / (TP+FN), 3)))
+  print('---')
+  cat('\n')
+}
+```
+
+## Lasso LOOCV confusion matrix
+
+Next up - perform LOOCV on each of the rows and use that to generate a full confusion matrix
+of TP/TN/FN/FP
+
+```{r}
+# to be run on server - NOT here - very computationally intensive
+# code here for completeness
+# import plyr before tidyverse if you want a progress bar
+library(plyr)
+pbar = create_progress_bar('text')
+pbar$init(nrow(all_annotated))
+
+cv_preds = numeric(length = nrow(all_annotated))
+cv_probs = numeric(length = nrow(all_annotated))
+
+for (i in 1:nrow(all_annotated)) {
+  
+  train_split = all_annotated[-i,]
+  test_split = all_annotated[i,]
+  model_vars = train_split %>% 
+    select(-read_name, -chromosome, -midpoint, -call, -start, -end,
+           -comments, -cross, -mask_size, -masked_call, -detection, -gc_length)
+  pred_matrix = model_matrix(check ~ .*., model_vars)
+  
+  # get best lambda and fit model
+  cv_lasso_current = cv.glmnet(
+    pred_matrix, model_vars$check, type.measure = 'deviance', alpha = 1, family = 'binomial'
+  )
+  lasso_model_current = glmnet(
+    pred_matrix, model_vars$check, family = 'binomial',
+    alpha = 1, lambda = cv_lasso_current$lambda
+  )
+  
+  test_model_vars = test_split %>% 
+    select(-read_name, -chromosome, -midpoint, -call, -start, -end,
+           -comments, -cross, -mask_size, -masked_call, -detection, -gc_length)
+  test_pred_matrix = model.matrix(check ~ .*., test_model_vars)
+  cv_probs[i] = predict(
+    lasso_model_current, newx = test_pred_matrix,
+    s = cv_lasso_current$lambda.min, type = 'response'
+  )
+  cv_preds[i] = ifelse(cv_probs[i] > 0.4, 1, 0)
+  pbar$step()
+
+}
+
+all_annotated$loocv_pred = cv_preds
+
+table(all_annotated$loocv_pred, all_annotated$check, deparse.level = 2)
+```
+
+
+```{r}
+# glmnet method - although I can't generate a confusion matrix with this to my knowledge
+cost <- function(r, pi = 0) mean(abs(r-pi) > 0.5)
+loocv_err = cv.glm(model_vars, lasso_model, cost = cost)
+```
+
+## Fitting the lasso model to the real data
+
+```{r}
+# to run on real data - not training set
+fit_lasso = function(d, model, lambda, threshold = 0.4, count = FALSE) {
+  model_vars = d %>% 
+    select(-read_name, -chromosome, -midpoint, -call, -start, -end, 
+           -mask_size, -masked_call, -detection, -gc_length)
+   # select(-comments, -cross, -read_name, -chromosome, -midpoint, -call,
+   #       -start, -end, -mask_size, -masked_call, -detection, -gc_length)
+    # mutate(check = as.numeric(check))
+  model_vars$check = 0
+  pred_matrix = model.matrix(check ~ .*., model_vars)
+  
+  # get training probs - supply pred matrix
+  lasso_probs = predict(
+    model, newx = pred_matrix, newdata = model_vars, s = lambda, type = 'response')
+  
+  # create vector of predictions
+  lasso_preds = ifelse(lasso_probs > threshold, 1, 0)
+  
+  # number of positives
+  if (count == TRUE) {
+    return(sum(lasso_preds))
+  } else if (count == FALSE) {
+    d_out = d
+    d_out$pred = as.numeric(lasso_preds)
+    d_out$prob = as.numeric(lasso_probs)
+    d_out = d_out %>% 
+      select(pred, prob, everything())
+    return(d_out)
+  }
+}
+
+transform_predictors = function(d) {
+  return(
+    d %>% 
+      filter(min_base_qual > 2) %>% # removes like, 10 weird reads across all sets
+      mutate(
+        outer_bound = ifelse(outer_bound > 0.5, 1 - outer_bound, outer_bound),
+        rel_midpoint = ifelse(rel_midpoint > 0.5, 1 - rel_midpoint, rel_midpoint),
+        indel_proximity = ifelse(indel_proximity == -1, pmax(read1_length, read2_length), indel_proximity),
+        proximate_indel_length = ifelse(proximate_indel_length == -1, 0, proximate_indel_length),
+        false_overlap = factor(false_overlap),
+        indel_close = ifelse(indel_proximity <= 5, 1, 0),
+        parent1_microsat = factor(parent1_microsat, levels = c(0, 1)),
+        parent2_microsat = factor(parent2_microsat, levels = c(0, 1)),
+        parent1_microsat_score = ifelse(is.na(parent1_microsat_score), 0, parent1_microsat_score),
+        parent2_microsat_score = ifelse(is.na(parent2_microsat_score), 0, parent2_microsat_score),
+        parent1_microsat_log2_pval = ifelse(is.na(parent1_microsat_log2_pval), 0, parent1_microsat_log2_pval),
+        parent2_microsat_log2_pval = ifelse(is.na(parent2_microsat_log2_pval), 0, parent2_microsat_log2_pval),
+        parent1_microsat_proximity = ifelse(
+          is.na(parent1_microsat_proximity), pmax(read1_length, read2_length), parent1_microsat_proximity),
+        parent2_microsat_proximity = ifelse(
+          is.na(parent2_microsat_proximity), pmax(read1_length, read2_length), parent2_microsat_proximity),
+        min_base_qual_discrete = factor(
+          min_base_qual, levels = c('11', '25', '37'),
+          labels = c('11', '25', '37'), ordered = TRUE)
+     )
+    )
+}
+
+d_all$`2343x1691` %>% 
+  transform_predictors(.) %>% 
+  fit_lasso(., lasso_model, cv_lasso$lambda.min, threshold = 0.4) %>% 
+  count(pred)
+```
+
+Getting counts of COs to compare against the expected amount:
+
+```{r}
+co_counts = d_all %>% 
+  map_dfr(
+    ~ transform_predictors(.) %>% 
+      fit_lasso(., lasso_model, cv_lasso$lambda.min, threshold = 0.4) %>% 
+      count(pred) %>% 
+      filter(pred == 1) %>% 
+      select(-pred, pred_cos = n),
+    .id = 'cross'
+  ) %>% 
+  arrange(desc(pred_cos))
+
+co_counts
+
+ 
+```
+
+Comparing with expected values based on Liu et al -
+
+```{r}
+rcmb_expected = read_tsv(here('rcmb-expected.tsv'), col_types = cols())
+
+co_counts %>% 
+  left_join(rcmb_expected) %>% 
+  filter(cross != '3071x2931', cross != '3071x3062') %>% 
+  
+  ggplot(aes(x = exp_CO, y = pred_cos)) +
+  geom_point(aes(color = type)) +
+  geom_smooth(method = 'lm', se = FALSE) +
+  theme_classic() +
+  coord_cartesian(
+    x = c(0, 2000),
+    y = c(0, 2000)
+  ) +
+  geom_abline(slope = 1, intercept = 0, linetype = 'dashed')
+
+# anova between groups
+# anova between different crosses of the same genotype
+```
+
+How does this look if we add in FPs and FNs? Given that using the 0.4 threshold confusion matrix above:
+
+$$ CO_{pred=1} = (CO_{actual} * 0.825) + (CO_{pred=0} * 0.034) $$
+
+Isolating `CO_actual`:
+
+$$ CO_{actual} = \frac{1}{0.825} * CO_{pred=1} - (CO_{pred=0} * 0.034)$$
+
+
+```{r}
+co_calls = d_all %>% 
+  map_dfr(
+    ~ transform_predictors(.) %>% 
+      fit_lasso(., lasso_model, cv_lasso$lambda.min, threshold = 0.4) %>% 
+      count(pred),
+    .id = 'cross'
+  )
+
+co_calls %>% 
+  mutate(
+    pred = case_when(
+      pred == 0 ~ 'pred0',
+      pred == 1 ~ 'pred1'
+    )
+  ) %>% 
+  pivot_wider(
+    names_from = pred,
+    values_from = n
+  ) %>% 
+  mutate(
+    co_actual = (1.21 * pred1) - (pred0 * 0.034)
+  )
+
+# I think this is bonked bc there are FAR more negatives proportionately than there were in the training set 
+# the training set was ~85% negatives but actual data is like 95% negative - so including FPs here isn't quite right
+```
+
+
+
+Saving full CO preds and just predicted COs to file:
+
+```{r}
+co_labeled_all = d_all %>% 
+  map_dfr(
+    ~ transform_predictors(.) %>% 
+      fit_lasso(., lasso_model, cv_lasso$lambda.min, threshold = 0.4),
+    .id = 'cross'
+  ) %>% 
+  filter(pred == 1) %>% 
+  left_join(
+    rcmb_expected %>% select(cross, type),
+    by = 'cross'
+  ) %>% 
+  select(cross, type, everything())
+
+co_labeled_all
+
+```
+
+Writing to file:
+
+```{r}
+write_tsv(
+  co_labeled_all, 
+  here('data/phase_changes/crossovers_lasso/crossovers_all.tsv'))
+
+write_tsv(
+  co_labeled_all %>% filter(type == 'mix'),
+  here('data/phase_changes/crossovers_lasso/crossovers_mix.tsv')
+)
+
+write_tsv(
+  co_labeled_all %>% filter(type == 'NA1'),
+  here('data/phase_changes/crossovers_lasso/crossovers_NA1.tsv')
+)
+
+write_tsv(
+  co_labeled_all %>% filter(type == 'NA2'),
+  here('data/phase_changes/crossovers_lasso/crossovers_NA2.tsv')
+)
+```
+
+Will work with these in another Rmd
+
+
+## Sample plots for presentation
+
+Counts of COs:
+
+```{r}
+library(wesanderson)
+palette = wes_palette(7, name = 'Darjeeling1', type = 'continuous')
+ld_paper_theme <- function(font_size = 16) {
+  theme(
+    axis.title = element_text(family = 'Helvetica', size = font_size),
+    axis.text = element_text(family = 'Helvetica', size = font_size, color = 'black'),
+    axis.line = element_line(color = 'black', linetype = 'solid', size = 0.9),
+    axis.ticks = element_line(color = 'black', linetype = 'solid', size = 0.9),
+    strip.text = element_text(family = 'Helvetica', size = font_size, color = 'black'),
+    strip.background = element_rect(color = 'black', size = 1.5),
+    plot.tag = element_text(color = 'black', size = font_size, face = 'bold'),
+    panel.grid = element_blank(),
+    panel.background = element_blank()
+  )
+}
+
+# quick plot for presentation
+cross_types = read_tsv(here('rcmb-expected.tsv'), col_types = cols()) %>% 
+  select(cross, var_count, type) %>% 
+  mutate(type = ifelse(type == 'mix', 'NA1 x NA2', type))
+
+cross_types %>% 
+  left_join(co_counts) %>% 
+  filter(cross != '3071x2931', cross != '3071x3062') %>% 
+  arrange(desc(pred_cos)) %>% 
+  
+  ggplot(aes(x = reorder(cross, -pred_cos), y = pred_cos, fill = type)) +
+  geom_bar(stat = 'identity', color = 'black') +
+  ld_paper_theme(font_size = 16) + # defined below
+  theme(
+    axis.text.x = element_text(size = 12, family = 'Helvetica', angle = 45, hjust = 1),
+    legend.position = 'top',
+    legend.title = element_blank()
+  ) +
+  labs(
+    x = '',
+    y = 'Predicted COs'
+  ) +
+  scale_fill_manual(
+    values = wes_palette(5, name = 'Zissou1', type = 'continuous')[c(1, 3, 5)]
+  )
+```
+
+Two sample landscapes:
+
+```{r}
+# make plot for one NA1 cross and one NA2 cross - let's do chr14 for consistency
+
+# NA1
+na1_sample = d_all$`3086x2935` %>% 
+  transform_predictors() %>% 
+  fit_lasso(., lasso_model, cv_lasso$lambda.min, threshold = 0.4, count = FALSE)
+
+# NA2
+na2_sample = d_all$`2343x1952` %>% 
+  transform_predictors() %>% 
+  fit_lasso(., lasso_model, cv_lasso$lambda.min, threshold = 0.4, count = FALSE)
+
+plot_samples = bind_rows(
+  na1_sample %>% mutate(cross = 'CC3071 x CC3059 (NA1)', type = 'NA1'),
+  na2_sample %>% mutate(cross = 'CC2343 x CC1952 (NA2)', type = 'NA2')
+) %>% 
+  mutate(
+    cross = factor(
+      cross, 
+      levels = c('CC3071 x CC3059 (NA1)', 'CC2343 x CC1952 (NA2)'))
+  )
+
+
+presentation_plot = plot_samples %>% 
+  filter(chromosome == 'chromosome_14') %>% 
+  mutate(midpoint_numeric = as.numeric(str_extract(midpoint, '[0-9]+$'))) %>% 
+  mutate(bin = floor(midpoint_numeric / 20000) * 20000) %>% 
+  count(cross, bin) %>% 
+  
+  ggplot(aes(x = bin / 1e6, y = n)) +
+  geom_bar(stat = 'identity', color = 'black', fill = 'black') +
+  facet_wrap(~ cross, nrow = 2, ncol = 1) +
+  theme_classic() +
+  labs(
+    x = 'Position (Mb)',
+    y = 'CO count'
+  ) +
+  ld_paper_theme(font_size = 16)
+
+presentation_plot
+
+ggsave(here('presentation_plot.pdf'), plot = presentation_plot, width = 6.34375, height = 3.385417)
+```
+
+
+
+
+# Testing a random forest approach
+
+Trying to split FNs into positives and negatives on the training set for now
+
+```{r}
+library(tree)
+library(randomForest)
+```
+
+Fitting the model:
+
+```{r}
+set.seed(42)
+rf_model_vars = all_annotated %>% 
+  select(-read_name, -chromosome, -midpoint, -call, -comments, -cross,
+         -start, -end, -mask_size, -masked_call, -detection, -gc_length) %>% 
+  transform_predictors()
+rf_model = randomForest(check ~ ., data = rf_model_vars, importance = TRUE, proximity = TRUE)
+print(rf_model)
+
+# testing on lasso negatives - TN and FN
+# these probs were calculated above - copying the code down here for completeness
+lasso_training_preds = ifelse(lasso_training_probs > 0.4, 1, 0)
+training_temp = all_annotated
+training_temp$prob = lasso_training_probs
+training_temp$pred = lasso_training_preds
+training_temp = training_temp %>% 
+  mutate(call_type = case_when(
+    pred == 1 & check == 1 ~ 'TP',
+    pred == 1 & check == 0 ~ 'FP',
+    pred == 0 & check == 1 ~ 'FN',
+    pred == 0 & check == 0 ~ 'TN'
+  )) %>% 
+  select(pred, prob, call_type, check, comments, cross, chromosome:min_base_qual_discrete, read_name) %>% 
+  filter(call_type %in% c('FN', 'TN')) 
+  
+training_temp$rf_call = training_temp %>% 
+  select(-read_name, -chromosome, -midpoint, -call, -comments, -cross,
+         -start, -end, -mask_size, -masked_call, -detection, -gc_length) %>% 
+  predict(rf_model, newdata = .)
+
+training_temp %>% 
+  select(rf_call, everything()) %>% 
+  count(rf_call, pred, check)
+
+```
+ 
+Trying a 2-step train/test split:
+
+```{r}
+# train the lasso AND the rf with the same training set
+# test the 2 step model on the same separate test set
+# mostly copied from above with rf elements added in
+set.seed(42)
+lasso_co_test = all_annotated %>% slice_sample(n = 500) # just under 20% of the data
+lasso_co_train = all_annotated %>% anti_join(lasso_co_test, by = 'read_name') # keep 80% for training
+
+train_model_vars = lasso_co_train %>% 
+  select(-comments, -cross, -read_name, -chromosome, -midpoint, -call,
+         -start, -end, -mask_size, -masked_call, -detection, -gc_length)
+  # mutate(check = as.numeric(check))
+pred_matrix = model.matrix(check ~ ., train_model_vars)
+outcome = lasso_co_train$check
+
+# obtain lambda value
+cv_lasso = cv.glmnet(
+  pred_matrix, outcome, type.measure = 'deviance', alpha = 1, family = 'binomial')
+
+# fit both lasso and rf models separately on the same training set
+lasso_model_split = glmnet(
+  pred_matrix, outcome, family = 'binomial', 
+  alpha = 1, # lasso regression
+  lambda = cv_lasso$lambda.min)
+
+rf_model_split = randomForest(
+  check ~ ., data = train_model_vars, 
+  importance = TRUE, proximity = TRUE)
+
+# get lasso test probs - supply pred matrix
+test_model_vars = lasso_co_test %>% 
+  select(-comments, -cross, -read_name, -chromosome, -midpoint, -call,
+         -start, -end, -mask_size, -masked_call, -detection, -gc_length)
+test_pred_matrix = model.matrix(check ~ ., test_model_vars)
+lasso_test_probs = predict(
+  lasso_model_split, newx = test_pred_matrix, s = cv_lasso$lambda.min, type = 'response')
+```
+
+Evaluating the models individually and then together:
+
+```{r}
+# look at lasso alone
+lasso_test_preds = ifelse(lasso_test_probs > 0.4, 1, 0)
+
+lasso_test_output = lasso_co_test
+lasso_test_output$prob = lasso_test_probs
+lasso_test_output$pred = lasso_test_preds
+
+print('lasso only')
+table(lasso_test_output$pred, lasso_test_output$check, deparse.level = 2)
+
+# look at rf alone - get rf preds on entire test set
+lasso_test_output$rf_pred = predict(rf_model_split, newdata = lasso_co_test)
+
+print('rf only')
+table(lasso_test_output$rf_pred, lasso_test_output$check, deparse.level = 2)
+
+# both models
+lasso_test_split_negatives = lasso_test_output %>% 
+  mutate(call_type = case_when(
+    check == 0 & pred == 0 ~ 'TN',
+    check == 1 & pred == 0 ~ 'FN',
+    check == 0 & pred == 1 ~ 'FP',
+    check == 1 & pred == 1 ~ 'TP'
+  )) %>% 
+  filter(call_type %in% c('FN', 'TN')) %>% # only keep the lasso negatives
+  select(pred, rf_pred, check, everything()) # looks like no FN was called as 1 by RF...
+
+two_step_model_split_final = lasso_test_split_negatives %>% # join negatives to positives
+  mutate(pred = ifelse(rf_pred == 1, 1, 0)) %>%   # change negatives called as 1 by RF to 1
+  # add the positives underneath
+  bind_rows(
+    lasso_test_output %>% 
+      mutate(call_type = case_when(
+        check == 0 & pred == 0 ~ 'TN',
+        check == 1 & pred == 0 ~ 'FN',
+        check == 0 & pred == 1 ~ 'FP',
+        check == 1 & pred == 1 ~ 'TP'
+    )) %>%
+      filter(call_type %in% c('FP', 'TP')) %>% # only positives
+      select(-call_type)
+  )
+
+print('lasso then rf on negatives to recover some FNs')
+table(two_step_model_split_final$pred, two_step_model_split_final$check, deparse.level = 2)
+```
+
+
+Let's try training the RF on just the lasso negatives:
+
+```{r}
+lasso_test_output %>% 
+  filter(pred == 0) %>% 
+  count(pred, check)
+
+lasso_negatives = lasso_test_output %>% 
+  filter(pred == 0) %>% 
+  select(-comments, -cross, -read_name, -chromosome, -midpoint, -call,
+         -start, -end, -mask_size, -masked_call, -detection, -gc_length, -rf_pred, -pred, -prob)
+
+# train model on train/test split JUST from negatives
+lasso_negatives_test = slice_sample(lasso_negatives, n = 200) # 30% of the 182 negatives
+lasso_negatives_train = anti_join(lasso_negatives, lasso_negatives_test) # remaining 142
+lasso_negatives_test %>% count(check) # 4 FNs to recover
+
+# train model on train set
+rf_model_negatives = randomForest(
+  check ~ ., data = lasso_negatives_train, 
+  importance = TRUE, proximity = TRUE)
+
+# testing on a new split dataset - if I was doing this on the full training set
+# rf_split_test_set = all_annotated %>% slice_sample(n = 210) # checked in console that this is separate from the other one
+rf_split_test_set = lasso_negatives_test
+
+# run lasso model on it separately
+# code mostly copied from above
+
+# if doing the full set
+# rf_test_model_vars = rf_split_test_set %>% 
+  # select(-comments, -cross, -read_name, -chromosome, -midpoint, -call,
+         # -start, -end, -mask_size, -masked_call, -detection, -gc_length)
+rf_test_model_vars = rf_split_test_set
+rf_test_pred_matrix = model.matrix(check ~ ., rf_test_model_vars)
+rf_lasso_test_probs = predict(
+  lasso_model_split, newx = rf_test_pred_matrix, s = cv_lasso$lambda.min, type = 'response')
+rf_lasso_test_preds = ifelse(rf_lasso_test_probs > 0.4, 1, 0)
+rf_lasso_test_output = rf_split_test_set
+rf_lasso_test_output$prob = rf_lasso_test_probs
+rf_lasso_test_output$pred = rf_lasso_test_preds
+
+print('lasso only')
+table(rf_lasso_test_output$pred, rf_lasso_test_output$check, deparse.level = 2)
+
+# look at rf alone - get rf preds on new test set in entirety
+rf_lasso_test_output$rf_pred = predict(rf_model_negatives, newdata = rf_split_test_set)
+
+print('rf only')
+table(rf_lasso_test_output$rf_pred, rf_lasso_test_output$check, deparse.level = 2)
+
+# both models
+rf_lasso_test_split_negatives = rf_lasso_test_output %>% 
+  mutate(call_type = case_when(
+    check == 0 & pred == 0 ~ 'TN',
+    check == 1 & pred == 0 ~ 'FN',
+    check == 0 & pred == 1 ~ 'FP',
+    check == 1 & pred == 1 ~ 'TP'
+  )) %>% 
+  filter(call_type %in% c('FN', 'TN')) %>% # only keep the lasso negatives
+  select(pred, rf_pred, check, everything()) # looks like no FN was called as 1 by RF...
+
+rf_two_step_model_split_final = rf_lasso_test_split_negatives %>% # join negatives to positives
+  mutate(pred = ifelse(rf_pred == 1, 1, 0)) %>%   # change negatives called as 1 by RF to 1
+  # add the positives underneath
+  bind_rows(
+    rf_lasso_test_output %>% 
+      mutate(call_type = case_when(
+        check == 0 & pred == 0 ~ 'TN',
+        check == 1 & pred == 0 ~ 'FN',
+        check == 0 & pred == 1 ~ 'FP',
+        check == 1 & pred == 1 ~ 'TP'
+    )) %>%
+      filter(call_type %in% c('FP', 'TP')) %>% # only positives
+      select(-call_type)
+  )
+
+print('lasso then rf on negatives to recover some FNs')
+table(rf_two_step_model_split_final$pred, rf_two_step_model_split_final$check, deparse.level = 2)
+
+```
+
+Training on the full training set negatives - although this is likely confounded since
+the model will see some of the exact same rows it was trained on: 
+
+```{r}
+training_temp %>% 
+  filter(pred == 0) %>% 
+  count(pred, check)
+
+lasso_negatives_all = training_temp %>% 
+  filter(pred == 0) %>% 
+  select(-comments, -cross, -read_name, -chromosome, -midpoint, -call, -call_type, -rf_call,
+         -start, -end, -mask_size, -masked_call, -detection, -gc_length, -pred, -prob)
+
+# train model on negatives from first test
+# or should I just do this on the full training set??
+rf_model_negatives = randomForest(
+  check ~ ., data = lasso_negatives_all, 
+  importance = TRUE, proximity = TRUE)
+
+# still testing on a new split dataset - just training on the full set of negatives
+rf_split_test_set = all_annotated %>% slice_sample(n = 210) 
+
+# run lasso model on it separately
+# code mostly copied from above
+rf_test_model_vars = rf_split_test_set %>% 
+  select(-comments, -cross, -read_name, -chromosome, -midpoint, -call,
+         -start, -end, -mask_size, -masked_call, -detection, -gc_length)
+rf_test_pred_matrix = model.matrix(check ~ ., rf_test_model_vars)
+rf_lasso_test_probs = predict(
+  lasso_model_split, newx = rf_test_pred_matrix, s = cv_lasso$lambda.min, type = 'response')
+rf_lasso_test_preds = ifelse(rf_lasso_test_probs > 0.4, 1, 0)
+rf_lasso_test_output = rf_split_test_set
+rf_lasso_test_output$prob = rf_lasso_test_probs
+rf_lasso_test_output$pred = rf_lasso_test_preds
+
+print('lasso only')
+table(rf_lasso_test_output$pred, rf_lasso_test_output$check, deparse.level = 2)
+
+# look at rf alone - get rf preds on new test set in entirety
+rf_lasso_test_output$rf_pred = predict(rf_model_negatives, newdata = rf_split_test_set)
+
+print('rf only')
+table(rf_lasso_test_output$rf_pred, rf_lasso_test_output$check, deparse.level = 2)
+
+# both models
+rf_lasso_test_split_negatives = rf_lasso_test_output %>% 
+  mutate(call_type = case_when(
+    check == 0 & pred == 0 ~ 'TN',
+    check == 1 & pred == 0 ~ 'FN',
+    check == 0 & pred == 1 ~ 'FP',
+    check == 1 & pred == 1 ~ 'TP'
+  )) %>% 
+  filter(call_type %in% c('FN', 'TN')) %>% # only keep the lasso negatives
+  select(pred, rf_pred, check, everything()) # looks like no FN was called as 1 by RF...
+
+rf_two_step_model_split_final = rf_lasso_test_split_negatives %>% # join negatives to positives
+  mutate(pred = ifelse(rf_pred == 1, 1, 0)) %>%   # change negatives called as 1 by RF to 1
+  # add the positives underneath
+  bind_rows(
+    rf_lasso_test_output %>% 
+      mutate(call_type = case_when(
+        check == 0 & pred == 0 ~ 'TN',
+        check == 1 & pred == 0 ~ 'FN',
+        check == 0 & pred == 1 ~ 'FP',
+        check == 1 & pred == 1 ~ 'TP'
+    )) %>%
+      filter(call_type %in% c('FP', 'TP')) %>% # only positives
+      select(-call_type)
+  )
+
+print('lasso then rf on negatives to recover some FNs')
+table(rf_two_step_model_split_final$pred, rf_two_step_model_split_final$check, deparse.level = 2)
+
+```
+
+
+Trying this on the real data:
+
+```{r}
+co_all_labeled_unfiltered = d_all %>% 
+  map_dfr(
+    ~ transform_predictors(.) %>% 
+      fit_lasso(., lasso_model, cv_lasso$lambda.min, threshold = 0.4),
+    .id = 'cross'
+  ) %>% 
+  left_join(
+    rcmb_expected %>% select(cross, type),
+    by = 'cross'
+  ) %>% 
+  select(cross, type, everything())
+
+co_negatives_rf = co_all_labeled_unfiltered %>% 
+  
+```
+
+
+
+
+
+
+
+
+
+
+# old - ignore
+
+Creating the model:
+
+```{r}
+co_fit_int = glm(
+  check ~ 
+    outer_bound + min_end_proximity + min_vars_in_hap +
+    var_skew + mismatch_var_ratio + var_per_hap + indel_close +
+    read1_length + read2_length + effective_length + indel_count +
+    proximate_indel_length + false_overlap + read1_mapq + read2_mapq +
+    min_var_qual + min_var_depth + avg_diff_parental_gq + avg_hap_var_gq +
+    avg_hap_var_depth + min_base_qual_discrete + mean_base_qual + rel_midpoint +
+    parent1_microsat + parent2_microsat +
+    parent1_microsat_length + parent2_microsat_length + 
+    parent1_microsat_log2_pval + parent2_microsat_log2_pval + 
+    parent1_microsat_score + parent2_microsat_score +
+    parent1_microsat_score*parent1_microsat_log2_pval +
+    parent2_microsat_score*parent2_microsat_log2_pval +
+    parent1_microsat*parent2_microsat +
+    # min_end_proximity*indel_proximity + indel_proximity*proximate_indel_length +
+    min_end_proximity*indel_close + indel_close*proximate_indel_length +
+    indel_close*indel_count + read1_mapq*read2_mapq,
+  data = all_annotated, family = binomial)
+
+summary(co_fit_int)
+```
+
+
+Let's get a training error rate:
+
+```{r}
+training_probs = predict(co_fit_int, newdata = all_annotated, type = 'response')
+
+# create vector of predictions
+training_preds = ifelse(training_probs > 0.4, 1, 0)
+
+# confusion matrix
+table(training_preds, all_annotated$check)
+
+# (TN + TP) / total
+# (102 + 827) / length(training_preds)
+
+# FP rate -
+# 15 / length(training_preds) # 1.4%
+
+# FN rate - 
+# 101 / length(training_preds) # 9.7%
+
+mean(training_preds == all_annotated$check) # 88.7% training rate! 
+```
+
+Splitting into test/train sets (validation set approach):
+
+```{r}
+# set.seed(42)
+co_test = all_annotated %>% slice_sample(n = 210) # just under 20% of the data
+co_train = all_annotated %>% anti_join(co_test, by = 'read_name') # keep 90% for training
+
+co_test %>% count(check) # number of false and true COs
+
+co_subset_fit = glm(
+  check ~ 
+    outer_bound + min_end_proximity + min_vars_in_hap +
+    var_skew + mismatch_var_ratio + var_per_hap + indel_close +
+    read1_length + read2_length + effective_length + indel_count +
+    proximate_indel_length + false_overlap + read1_mapq + read2_mapq +
+    min_var_qual + min_var_depth + avg_diff_parental_gq + avg_hap_var_gq +
+    avg_hap_var_depth + min_base_qual_discrete + mean_base_qual + rel_midpoint +
+    parent1_microsat + parent2_microsat +
+    parent1_microsat_length + parent2_microsat_length + 
+    parent1_microsat_log2_pval + parent2_microsat_log2_pval + 
+    parent1_microsat_score + parent2_microsat_score +
+    parent1_microsat_score*parent1_microsat_log2_pval +
+    parent2_microsat_score*parent2_microsat_log2_pval +
+    parent1_microsat*parent2_microsat +
+    # min_end_proximity*indel_proximity + indel_proximity*proximate_indel_length +
+    min_end_proximity*indel_close + indel_close*proximate_indel_length +
+    indel_close*indel_count + read1_mapq*read2_mapq,
+  data = co_train, family = binomial) # run on co_train
+
+co_subset_probs = predict(
+  co_subset_fit, 
+  newdata = co_test, # run model on test set
+  type = 'response')
+
+co_subset_preds = ifelse(co_subset_probs > 0.35, 1, 0)
+
+table(co_subset_preds, co_test$check)
+
+mean(co_subset_preds == co_test$check)
+```
+
+Trying out k-fold cross-validation:
+
+```{r}
+set.seed(42)
+cost_fxn = function(r, pi = 0) mean(abs(r-pi) > 0.5) # provided by boot for binary response
+kfold_cv = cv.glm(data = all_annotated, glmfit = co_fit_int, cost = cost_fxn, K = 10)
+1 - kfold_cv$delta
+
+```
+
+Adjusting the cutoff - what's the actual probability value of FNs deemed '1'?
+
+```{r}
+co_cutoffs = data.frame(
+  correct_call = co_test$check,
+  model_prob = co_subset_probs,
+  model_call = ifelse(co_subset_probs > 0.4, 1, 0)
+) %>% 
+  mutate(
+    call = case_when(
+      correct_call == 0 & model_call == 0 ~ 'TN',
+      correct_call == 1 & model_call == 0 ~ 'FN',
+      correct_call == 0 & model_call == 1 ~ 'FP',
+      correct_call == 1 & model_call == 1 ~ 'TP'
+    )
+  )
+
+co_cutoffs
+```
+
+Plotting:
+
+```{r}
+co_cutoffs %>% 
+  ggplot(aes(x = model_prob)) +
+  geom_histogram() +
+  theme_classic() +
+  facet_wrap(~ call) +
+  scale_x_continuous(breaks = seq(0, 1, 0.1)) +
+  geom_vline(xintercept = 0.4, color = 'red', linetype = 'dashed') +
+  theme(
+    panel.grid.major = element_line(color = 'grey', size = 0.5, linetype = 'dashed')
+  )
+```
+
+Looking at some of these in IGV:
+
+```{r}
+co_call_validation = co_test
+co_call_validation$prob = co_subset_probs
+co_call_validation$model_call = ifelse(co_subset_probs > 0.5, 1, 0)
+
+co_call_validation = co_call_validation %>% 
+  mutate(
+    call_type = case_when(
+      check == 0 & model_call == 0 ~ 'TN',
+      check == 1 & model_call == 0 ~ 'FN',
+      check == 0 & model_call == 1 ~ 'FP',
+      check == 1 & model_call == 1 ~ 'TP'
+    )
+  ) %>% 
+  select(check, model_call, call_type, prob, everything())
+
+View(co_call_validation)
+
+```
+
+# even older
 
 ```{r}
 rcmb_expected = read_tsv(
@@ -79,7 +1190,8 @@ rcmb_qual = d_all %>%
   map_dfr(
     ~ filter(.,
       call == 'cross_over',
-      min_vars_in_hap >= 1, mismatch_var_ratio <= 1.5,
+      min_vars_in_hap >= 1, mismatch_var_ratio <= 1.5, 
+      outer_bound >= 0.1, outer_bound <= 0.9,
       # rel_midpoint >= 0.2, rel_midpoint <= 0.8,
       read1_length >= 150, read2_length >= 150, effective_length >= 200,
       indel_proximity >= 5) %>% 
@@ -98,11 +1210,21 @@ rcmb_qual
 rcmb_qual %>% 
   left_join(rcmb_expected, by = 'cross') %>% 
   ggplot(aes(x = exp_CO, y = count)) +
-  geom_point() +
+  geom_point(aes(color = type)) +
   geom_smooth(method = 'lm', se = FALSE) +
   geom_abline(slope = 1, intercept = 0, linetype = 'dashed') +
   coord_cartesian(x = c(0, 2000), y = c(0, 6000))
 
+```
+
+Number of reads passing that filter vs number of reads total:
+
+```{r}
+rcmb_qual %>% 
+  select(-s) %>% 
+  left_join(select(rcmb_expected, cross, type, kept_reads)) %>% 
+  mutate(CO_read_rate = count / kept_reads) %>% 
+  arrange(desc(CO_read_rate))
 ```
 
 
@@ -131,6 +1253,13 @@ d_all$`2343x1952` %>%
 ```
 
 After going through the 2343x1952 putative COs manually - 
+
+- redo this now that I have more quality metrics
+- draw events totally at random across all crosses - and then score - try to get it even across crosses
+- run a logistic regression with the already-trained set and seeing how it goes
+- add more 'trash' ones to the training set
+- add parents to model as discrete variable
+- for each event - add whether nuclear filter would have got it
 
 ```{r}
 new_filtered = d_all$`2343x1952` %>% 
@@ -283,6 +1412,16 @@ mvr %>%
     axis.text = element_text(size = 12, color = 'black', family = 'Helvetica'),
     strip.text = element_text(size = 12, color = 'black', family = 'Helvetica')
   )
+
+# TODO: consider adding interaction terms
+# lasso - can add all x all interactions, and then lasso removes the useless ones
+# TODO: incorporate standard metrics (MAPQ, avg GQ, QUAL, etc) into the model
+# randomize and get more COs generally - without pre-filtering
+# add effective length as a quality metric as well
+# does size of proximate indels matter?
+# indel_proximity * min_end_proximity interaction - very likely to be useful
+# talk to Madeleine about glmnet and lasso 
+# min vars in hap is another useful one for interactions 
 ```
 
 Multiple logistic regression:
@@ -291,9 +1430,12 @@ Multiple logistic regression:
 mvr %>% 
   mutate(indel_proximity = 
            ifelse(!is.finite(indel_proximity), max(read1_length, read2_length), indel_proximity)) %>% 
+  mutate(
+    outer_bound_symmetric = abs((outer_bound - 0.5) / 0.5)
+  ) %>% 
   filter(check != 2) %>% 
   glm(
-  check ~ var_count + outer_bound + min_end_proximity + min_vars_in_hap + var_skew + mismatch_var_ratio + var_per_hap + indel_proximity + effective_length, 
+  check ~ var_count + outer_bound_symmetric + min_end_proximity + min_vars_in_hap + var_skew + mismatch_var_ratio + var_per_hap + indel_proximity + effective_length, 
   data = .,
   family = 'binomial'
 ) %>% 
@@ -306,10 +1448,13 @@ Keeping significant predictors:
 mvr_fit = mvr %>% 
   mutate(indel_proximity = 
            ifelse(!is.finite(indel_proximity), max(read1_length, read2_length), indel_proximity)) %>% 
+  mutate(
+    outer_bound_symmetric = abs((outer_bound - 0.5) / 0.5)
+  ) %>% 
   filter(check != 2) %>% 
   mutate(check = factor(check)) %>% 
   glm(
-  check ~ outer_bound + mismatch_var_ratio + indel_proximity + var_skew, 
+  check ~ outer_bound_symmetric + var_skew + mismatch_var_ratio*indel_proximity, 
   data = .,
   family = binomial
 )
@@ -323,7 +1468,10 @@ summary(mvr_fit)
 ```{r}
 mvr_factor = mvr %>% filter(check != 2) %>% mutate(check = factor(check)) %>% 
   mutate(indel_proximity =
-         ifelse(!is.finite(indel_proximity), max(read1_length, read2_length), indel_proximity))
+         ifelse(!is.finite(indel_proximity), max(read1_length, read2_length), indel_proximity)) %>% 
+  mutate(
+    outer_bound_symmetric = abs((outer_bound - 0.5) / 0.5)
+  ) 
 
 # filter calc
 filter_calc = function(model_coef, outer_bound, mvr, indel_proximity) {
@@ -337,7 +1485,7 @@ filter_calc = function(model_coef, outer_bound, mvr, indel_proximity) {
   return(pX_numerator / pX_denominator)
 }
 
-filter_calc(summary(mvr_fit)$coefficients, outer_bound = 0, mvr = 0, indel_proximity = 5)
+filter_calc(summary(mvr_fit)$coefficients, outer_bound = 1, mvr = 0, indel_proximity = 5)
 
 preds_raw = stats::predict(mvr_fit, mvr_factor, type = 'response')
 ```
@@ -366,7 +1514,7 @@ dim(mvr_train)
 dim(mvr_test)
 
 train_fit = glm(
-  check ~ outer_bound + mismatch_var_ratio + indel_proximity, 
+  check ~ outer_bound_symmetric + mismatch_var_ratio + indel_proximity, 
   data = mvr_train,
   family = binomial
 )
@@ -399,14 +1547,14 @@ Predicting based on a set of given filters:
 predict(
   mvr_fit, 
   newdata = data.frame(
-    outer_bound = c(0.3, 0.2, 0.1),
+    outer_bound_symmetric = c(0.1, 0.5, 0.8),
     indel_proximity = c(70, 10, 5),
     mismatch_var_ratio = c(0.5, 1.0, 2.0),
     var_skew = c(1, 3, 5)),
   type = 'response'
 )
 
-# hard filters will be outer bound > 0.1, indel prox > 5, MVR < 1.5
+# hard filters will be outer bound symmetric < 0.8, indel prox > 5, MVR < 1.5
 # var skew doesn't seem to make a lot of sense as a hard filter
 ```
 
@@ -416,13 +1564,17 @@ predict(
 ```{r}
 diff_cross = d_all$`2343x1691` %>% 
   filter(call == 'cross_over') %>% 
+  mutate(
+    outer_bound_symmetric = abs((outer_bound - 0.5) / 0.5)
+  ) %>% 
   filter(indel_proximity >= 5,
          mismatch_var_ratio <= 1.5,
-         outer_bound > 0.1,
+         outer_bound_symmetric < 0.8,
          read1_length >= 150, read2_length >= 150,
          effective_length >= 200)
 
 diff_cross
+# TODO: switch to pure regression/scoring approach - remove hard filtering based on eyeballing
 ```
 
 Predicting whether these are legitimate COs with the model:
