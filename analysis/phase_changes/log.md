@@ -2755,17 +2755,363 @@ this looks good - but I need to convert these into tabix-able files for `summari
 get metrics for each pair as needed
 
 going to continue this in `analysis/tandem_repeats/log.md`
+
+--
             
+alright - now that these have been generated, I've updated `summarise_cross` to return
+various microsat metrics
 
+test run -
 
+```bash
+time python analysis/phase_changes/summarise_cross.py \
+--bam data/phase_changes/sam/2343x1952.filtered.sam \
+--vcf data/genotyping/vcf_filtered/2343x1952.vcf.gz \
+--false_bed data/phase_changes/nuclear/fp_bed/2343x1952.nuclear.bed.gz \
+--microsats data/tandem_repeats/samples/CC2343.sorted.tsv.gz \
+data/tandem_repeats/samples/CC1952.sorted.tsv.gz \
+--mask_size 75 --processes 12 --mapq 0 --base_qual 0 \
+--out sc_test.tsv
+```
 
+took a bit of debugging but looks good - just need to update the workflow
+to correctly pull the microsat files
 
+```bash
+# this time with microsats
+time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk --cores 12
+```
 
+it does occur to me that the parental event summaries can't be run again without
+microsats being implemented as an optional arg - but I'll worry about that if/when I have to
 
+## 5/9/2022
 
+quickly checking to see what's up with the index files - let's just do a test run:
 
+```bash
+# going to cancel out soon as the bed file is made
+time readcomb-fp --fname data/phase_changes/sam/2344x1952.init.sam \
+--false_plus data/phase_changes/parental/2344x1952.plus.filtered.sam \
+--false_minus data/phase_changes/parental/2344x1952.minus.filtered.sam \
+--vcf data/genotyping/vcf_filtered/2344x1952.vcf.gz \
+--method nuclear --read_length_filter 0 --log fp.log \
+--false_bed_out fp.temp.bed --out fp.temp.sam
+```
 
+## 12/9/2022
 
+hello from Northern ON!
 
+index files were fine - I did a diff that day and there was nothing
+different about them
 
+today - reworked min end proximity to handle overlapping sites better.
+this is because this quality metric was lower than it should
+have been for phase change variants found in an overlapping region
 
+going to do a test run on 2343x1952 since that had my test case
+read
+
+```bash
+time python analysis/phase_changes/summarise_cross.py \
+--bam data/phase_changes/sam/2343x1952.filtered.sam \
+--vcf data/genotyping/vcf_filtered/2343x1952.vcf.gz \
+--mask_size 75 --processes 16 --mapq 0 --base_qual 0 \
+--microsats data/tandem_repeats/samples/CC2343.sorted.tsv.gz \
+data/tandem_repeats/samples/CC1952.sorted.tsv.gz \
+--out sc_test.tsv
+```
+
+tested for differences by loading both this and the old file into R
+and seeing whether the min end prox column vectors differed on average
+(eg mean difference of both vectors) - need to sort files first though
+of course, since they were generated w/ multiprocessing
+
+```R
+library(tidyverse)
+d_old = read_tsv('data/phase_changes/event_summaries/2343x1952.75.tsv', 
+    col_types = cols()) %>%
+    arrange(midpoint, read_name)
+d_new = read_tsv('sc_test.tsv') %>%
+    arrange(midpoint, read_name)
+```
+
+looks good - this only seems to affect 6197 of the 73989 rows
+
+going to rerun this across all crosses and then redo the model tomorrow
+
+```bash
+rm -v data/phase_changes/event_summaries/*
+
+time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk \
+--cores 16
+```
+
+## 13/9/2022
+
+alright - exporting these offline and rerunning the model
+
+next up - redoing the microsat files with much lower thresholds - the model
+should be able to sort through 'low quality' microsats and whether they
+correlate with false calls or not - I just need to give it more data to work
+with! 
+
+going to quickly do this by rerunning the tandem repeats calc workflow
+but with the score threshold set to 0
+
+```bash
+rm -v data/tandem_repeats/json/*
+rm -v data/tandem_repeats/samples/*
+rm -v data/tandem_repeats/tsv/*
+
+time snakemake -pr -s analysis/tandem_repeats/tandem_repeats_calc.smk \
+--cores 8
+```
+
+and now to regen the event summaries - again:
+
+```bash
+rm -v data/phase_changes/event_summaries/*
+
+time snakemake -pr -s analysis/phase_changes/phase_change_detection.smk \
+--cores 16
+```
+
+## 20/9/2022
+
+today - trying to fit a random forest regression tree to the training data -
+I would do this locally but I can't get the `randomForest` package working on my local
+machine, so I'm going to try this in a Jupyter Notebook on here
+
+alright nevermind - Jupyter is completely shitting the bed cause of some X11 issue
+I don't have the brainpower or desire to make sense of, so we're doing this in a kernel
+
+```R
+library(tidyverse)
+library(tree) # had to install.packages
+library(randomForest)
+set.seed(42)
+d = read_tsv('data/phase_changes/cos_all_annotated.tsv', col_types = cols())
+model_vars = d %>%
+    select(-comments, -cross, -chromosome, -midpoint, -call,
+        -start, -end, -mask_size, -masked_call, -detection, -gc_length) %>%
+    mutate(
+        check = factor(check),
+        outer_bound = ifelse(outer_bound > 0.5, 1 - outer_bound, outer_bound),
+        rel_midpoint = ifelse(rel_midpoint > 0.5, 1 - rel_midpoint, rel_midpoint),
+        indel_proximity = ifelse(indel_proximity == -1, pmax(read1_length, read2_length), indel_proximity),
+        proximate_indel_length = ifelse(proximate_indel_length == -1, 0, proximate_indel_length),
+        false_overlap = factor(false_overlap),
+        indel_close = ifelse(indel_proximity <= 5, 1, 0),
+        parent1_microsat = factor(parent1_microsat, levels = c(0, 1)),
+        parent2_microsat = factor(parent2_microsat, levels = c(0, 1)),
+        parent1_microsat_score = ifelse(is.na(parent1_microsat_score), 0, parent1_microsat_score),
+        parent2_microsat_score = ifelse(is.na(parent2_microsat_score), 0, parent2_microsat_score),
+        parent1_microsat_log2_pval = ifelse(is.na(parent1_microsat_log2_pval), 0, parent1_microsat_log2_pval),
+        parent2_microsat_log2_pval = ifelse(is.na(parent2_microsat_log2_pval), 0, parent2_microsat_log2_pval),
+        parent1_microsat_proximity = ifelse(
+          is.na(parent1_microsat_proximity), pmax(read1_length, read2_length), parent1_microsat_proximity),
+        parent2_microsat_proximity = ifelse(
+          is.na(parent2_microsat_proximity), pmax(read1_length, read2_length), parent2_microsat_proximity),
+        min_base_qual_discrete = factor(
+          min_base_qual, levels = c('11', '25', '37'),
+          labels = c('11', '25', '37'), ordered = TRUE)
+     )
+
+test_subset = model_vars %>% slice_sample(n = 105) 
+train_subset = model_vars %>% anti_join(test_subset, by = 'read_name')
+
+test_subset = test_subset %>% select(-read_name)
+train_subset = train_subset %>% select(-read_name)
+
+rf_model = randomForest(check ~ ., data = train_subset, importance = TRUE, proximity = TRUE)
+print(rf_model)
+
+Call:
+ randomForest(formula = check ~ ., data = train_subset, importance = TRUE,      proximity = TRUE)
+               Type of random forest: classification
+                     Number of trees: 500
+No. of variables tried at each split: 6
+
+        OOB estimate of  error rate: 6.14%
+Confusion matrix:
+    0   1 class.error
+0 783  10  0.01261034
+1  48 104  0.31578947
+
+x = predict(rf_model, newdata = test_subset)
+y = test_subset$check
+table(x, y)
+   y
+x    0  1
+  0 89  7
+  1  2  7
+# not great! 
+
+# training error rate?
+rf_training = randomForest(check ~ ., data = model_vars, importance = TRUE, proximity = TRUE)
+Call:
+ randomForest(formula = check ~ ., data = model_vars, importance = TRUE, proximity = TRUE)
+               Type of random forest: classification
+                     Number of trees: 500
+No. of variables tried at each split: 6
+
+        OOB estimate of  error rate: 6.76%
+Confusion matrix:
+    0   1 class.error
+0 866  18  0.02036199
+1  53 113  0.31927711
+
+```
+
+## 25/9/2022
+
+today - need to get effective sequence per window across the 
+genome for each of the crosses, since this will give me the denominator
+when calculating windowed CO rates 
+
+one way to do this - calculate midpoints independently from
+readcomb as just `(end - start) / 2` while otherwise getting
+end and start the same way as I did when generating the `read_lengths.tsv`
+file earlier (9/7/2022)
+
+but one problem is that these BAM files aren't sorted... 
+let's try reimplementing that 17 array set idea that I had
+
+better yet, could create and repeatedly update a single giant 19 x n array,
+where n is the maximum number of possible windows - this avoids having to deal
+with a Python dict
+
+could do two arrays so I could actually keep the number of read counts as well
+come to think of it
+
+one concern is gene conversions - but I could always subtract these from the
+values after the fact
+
+going to get started on `windowed_effective_sequence.py`
+
+giving this a go:
+
+```bash
+time python analysis/phase_changes/windowed_effective_sequence.py \
+--fname data/alignments/bam_prepped/2343x1691.sorted.bam \
+--vcf data/genotyping/vcf_filtered/2343x1691.vcf.gz \
+--window_size 10000 \
+--out eff_test.tsv
+```
+
+## 26/9/2022
+
+scaling this up to all crosses - although I think I should
+start a new analysis folder called `rate` for this, and I'm going
+to move this script there in anticipation of more landscape data
+
+## 27/9/2022
+
+need to do LOOCV cross validation, but it's probably way too intensive to
+run on my local machine so I'm going to do it here
+
+```R
+library(plyr)
+library(tidyverse)
+library(glmnet)
+
+all_annotated = read_tsv('data/phase_changes/cos_all_annotated.tsv', col_types = cols()) %>%
+     mutate(
+    outer_bound = ifelse(outer_bound > 0.5, 1 - outer_bound, outer_bound),
+    rel_midpoint = ifelse(rel_midpoint > 0.5, 1 - rel_midpoint, rel_midpoint),
+    indel_proximity = ifelse(indel_proximity == -1, pmax(read1_length, read2_length), indel_proximity),
+    proximate_indel_length = ifelse(proximate_indel_length == -1, 0, proximate_indel_length),
+    false_overlap = factor(false_overlap),
+    indel_close = ifelse(indel_proximity <= 5, 1, 0),
+    parent1_microsat = factor(parent1_microsat, levels = c(0, 1)),
+    parent2_microsat = factor(parent2_microsat, levels = c(0, 1)),
+    parent1_microsat_score = ifelse(is.na(parent1_microsat_score), 0, parent1_microsat_score),
+    parent2_microsat_score = ifelse(is.na(parent2_microsat_score), 0, parent2_microsat_score),
+    parent1_microsat_log2_pval = ifelse(is.na(parent1_microsat_log2_pval), 0, parent1_microsat_log2_pval),
+    parent2_microsat_log2_pval = ifelse(is.na(parent2_microsat_log2_pval), 0, parent2_microsat_log2_pval),
+    parent1_microsat_proximity = ifelse(
+      is.na(parent1_microsat_proximity), pmax(read1_length, read2_length), parent1_microsat_proximity),
+    parent2_microsat_proximity = ifelse(
+      is.na(parent2_microsat_proximity), pmax(read1_length, read2_length), parent2_microsat_proximity),
+    min_base_qual_discrete = factor(
+      min_base_qual, levels = c('11', '25', '37'),
+      labels = c('11', '25', '37'), ordered = TRUE),
+    check = factor(check)) 
+
+# initial lasso fit
+set.seed(42)
+model_vars = all_annotated %>% 
+  select(-comments, -cross, -read_name, -chromosome, -midpoint, -call,
+         -start, -end, -mask_size, -masked_call, -detection, -gc_length)
+  # mutate(check = as.numeric(check))
+pred_matrix = model.matrix(check ~ .*., model_vars)
+outcome = model_vars$check
+
+# obtain lambda value
+cv_lasso = cv.glmnet(
+  pred_matrix, outcome, type.measure = 'deviance', alpha = 1, family = 'binomial')
+
+lasso_model = glmnet(
+  pred_matrix, outcome, family = 'binomial', 
+  alpha = 1, # lasso regression
+  lambda = cv_lasso$lambda)
+
+# get training probs - supply pred matrix
+lasso_training_probs = predict(
+  lasso_model, newx = pred_matrix, s = cv_lasso$lambda.min, type = 'response')
+
+# create vector of predictions
+lasso_training_preds = ifelse(lasso_training_probs > 0.4, 1, 0)
+
+# confusion matrix
+table(lasso_training_preds, all_annotated$check)
+
+mean(lasso_training_preds == all_annotated$check)
+
+# LOOCV
+cv_preds = numeric(length = nrow(all_annotated))
+cv_probs = numeric(length = nrow(all_annotated))
+
+pbar = create_progress_bar('text')
+pbar$init(nrow(all_annotated))
+
+for (i in 1:nrow(all_annotated)) {
+    train_split = all_annotated[-i,]
+    test_split = all_annotated[i,]
+    model_vars = train_split %>%
+        select(-read_name, -chromosome, -midpoint, -call, -start, -end,
+               -comments, -cross, -mask_size, -masked_call, -detection, -gc_length)
+    pred_matrix = model.matrix(check ~ .*., model_vars)
+
+    cv_lasso_current = cv.glmnet(
+        pred_matrix, model_vars$check, type.measure = 'deviance', alpha = 1, family = 'binomial')
+    lasso_model_current = glmnet(
+        pred_matrix, model_vars$check, family = 'binomial',
+        alpha = 1, lambda = cv_lasso_current$lambda)
+    
+    test_model_vars = test_split %>%
+        select(-read_name, -chromosome, -midpoint, -call, -start, -end,
+               -comments, -cross, -mask_size, -masked_call, -detection, -gc_length)
+    test_pred_matrix = model.matrix(check ~ .*., test_model_vars)
+    cv_probs[i] = predict(
+        lasso_model_current, newx = test_pred_matrix, 
+        s = cv_lasso_current$lambda.min, type = 'response')
+    cv_preds[i] = ifelse(cv_probs[i] > 0.4, 1, 0)
+    pbar$step()
+}
+
+table(cv_preds, all_annotated$check, deparse.level = 2)
+
+        # all_annotated$check
+# cv_preds   0   1
+       # 0 849  32
+       # 1  35 134
+
+all_annotated$loocv_pred = cv_pred
+all_annotated$loocv_prob = cv_probs
+
+write_tsv(all_annotated, 'data/phase_changes/cos_all_annotated_loocv.tsv')
+
+```
