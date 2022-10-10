@@ -19,7 +19,7 @@ def args():
         type=int, help='Amount of sequence to retrieve on either side of cross midpoint')
     parser.add_argument('-d', '--fasta_dir', required=True,
         type=str, help='Dir containing sample-chrom-separated FASTAs')
-    parser.add_argument('-r', '--random', required=True,
+    parser.add_argument('-r', '--random', required=False,
         action='store_true', help='Generate equivalent amount of random sequences')
     parser.add_argument('-o', '--out', required=True,
         type=str, help='File to write to (.fa/.fasta)')
@@ -136,6 +136,7 @@ def generate_fastas(fname, window_size, fasta_dir, random, lengths, out):
             for line in tqdm(reader):
                 cross = line['cross']
                 chrom = line['chromosome']
+                read_name = line['read_name']
                 if chrom in ['cpDNA', 'mtDNA']:
                     continue
                 if cross in ['3071x2931', '3071x3062']:
@@ -144,7 +145,7 @@ def generate_fastas(fname, window_size, fasta_dir, random, lengths, out):
                 seq, midpoint = get_seq(
                     parent1, parent2, line, window_size, fasta_dir, random, lengths)
                 if not random:
-                    f_out.write(f'>{cross}-{chrom}:{midpoint}\n')
+                    f_out.write(f'>{cross}-{chrom}:{midpoint}-{read_name}\n')
                 elif random:
                     f_out.write(f'>{cross}-{chrom}:{midpoint}-random\n')
                 f_out.write(seq + '\n')

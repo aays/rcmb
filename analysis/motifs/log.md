@@ -129,6 +129,163 @@ time python analysis/motifs/generate_fastas.py \
 --window_size 250 \
 --fasta_dir data/ldhelmet/fasta \
 --random \
---out data/motifs/fasta/NA1_random.fasta # takes 1 min per 1k COs
+--out data/motifs/fasta/NA1_random.fasta
+```
+
+and let's try MEME one last time for this before doing this across pops:
+
+```bash
+time ./bin/meme data/motifs/fasta/NA1_spliced.fasta \
+-neg data/motifs/fasta/NA1_random.fasta \ # randomly drawn sequences
+-oc data/motifs/meme_out_NA1/ \ # will overwrite prev dir
+-objfun se \ # selective enrichment
+-V --alph meme_alphabet.txt \
+-nmotifs 8 -minsites 5 -maxsites 20 # took 18 min
+```
+
+going to also try using STREME after this - apparently that is specifically
+discriminative, and better for larger datasets (e.g greater than 50 sequences,
+and we have thousands) 
+
+```bash
+time ./bin/streme \
+-p data/motifs/fasta/NA1_spliced.fasta \
+-n data/motifs/fasta/NA1_random.fasta \
+-o data/motifs/streme_out_NA1 \
+--alph meme_alphabet.txt \
+-nmotifs 8 \
+-minw 5 -maxw 20
+```
+
+there's a really convincing motif here! let's regen this for the other pops (NA2 and mix)
+
+```bash
+time python analysis/motifs/generate_fastas.py \
+--fname data/phase_changes/crossovers_lasso/crossovers_NA2_corrected.tsv \
+--window_size 250 \
+--fasta_dir data/ldhelmet/fasta \
+--out data/motifs/fasta/NA2_spliced.fasta
+
+time python analysis/motifs/generate_fastas.py \
+--fname data/phase_changes/crossovers_lasso/crossovers_NA2_corrected.tsv \
+--window_size 250 \
+--fasta_dir data/ldhelmet/fasta \
+--random \
+--out data/motifs/fasta/NA2_random.fasta
+
+time python analysis/motifs/generate_fastas.py \
+--fname data/phase_changes/crossovers_lasso/crossovers_mix_corrected.tsv \
+--window_size 250 \
+--fasta_dir data/ldhelmet/fasta \
+--out data/motifs/fasta/mix_spliced.fasta
+
+time python analysis/motifs/generate_fastas.py \
+--fname data/phase_changes/crossovers_lasso/crossovers_mix_corrected.tsv \
+--window_size 250 \
+--fasta_dir data/ldhelmet/fasta \
+--random \
+--out data/motifs/fasta/mix_random.fasta
+```
+
+## 9/10/2022
+
+today - running STREME on these other two populations 
+
+```bash
+time ./bin/streme -p data/motifs/fasta/NA2_spliced.fasta \
+-n data/motifs/fasta/NA2_random.fasta \
+-oc data/motifs/streme_out_NA2 \
+--alph meme_alphabet.txt \
+-nmotifs 8 \
+-minw 5 \
+-maxw 20 # took 10 min
+
+time ./bin/streme -p data/motifs/fasta/mix_spliced.fasta \
+-n data/motifs/fasta/mix_random.fasta \
+-oc data/motifs/streme_out_mix \
+--alph meme_alphabet.txt \
+-nmotifs 8 \
+-minw 5 \
+-maxw 20
+```
+
+and finally, doing this for all crossovers combined:
+
+```bash
+time python analysis/motifs/generate_fastas.py \
+--fname data/phase_changes/crossovers_lasso/crossovers_all_corrected.tsv \
+--window_size 250 \
+--fasta_dir data/ldhelmet/fasta \
+--out data/motifs/fasta/all_spliced.fasta
+
+time python analysis/motifs/generate_fastas.py \
+--fname data/phase_changes/crossovers_lasso/crossovers_all_corrected.tsv \
+--window_size 250 \
+--fasta_dir data/ldhelmet/fasta \
+--random \
+--out data/motifs/fasta/all_random.fasta
+
+# and then streme
+time ./bin/streme -p data/motifs/fasta/all_spliced.fasta \
+-n data/motifs/fasta/all_random.fasta \
+-oc data/motifs/streme_out_mix \
+--alph meme_alphabet.txt \
+-nmotifs 8 \
+-minw 5 \
+-maxw 20 # took 52 min! 
+```
+
+finally - I'm going to run MEME on the full file in case,
+since with the full CO set there are so many COs that
+my randomly drawn sequences might actually overlap with them -
+so here goes:
+
+```bash
+# running without randomly drawn sequences - since that's the STREME results
+time ./bin/meme data/motifs/fasta/NA1_spliced.fasta \
+-oc data/motifs/meme_out_NA1/ \ # will overwrite prev dir
+-V -alph meme_alphabet.txt \
+-nmotifs 8 -minsites 5 -maxsites 20 # 18 min
+
+time ./bin/meme data/motifs/fasta/NA2_spliced.fasta \
+-oc data/motifs/meme_out_NA2/ \
+-V -alph meme_alphabet.txt \
+-nmotifs 8 -minsites 5 -maxsites 20 # 18 min
+
+time ./bin/meme data/motifs/fasta/mix_spliced.fasta \
+-oc data/motifs/meme_out_mix/ \
+-V -alph meme_alphabet.txt \
+-nmotifs 8 -minsites 5 -maxsites 20 # 18 min
+
+time ./bin/meme data/motifs/fasta/all_spliced.fasta \
+-oc data/motifs/meme_out_all/ \
+-V -alph meme_alphabet.txt \
+-nmotifs 8 -minsites 5 -maxsites 20
+```
+
+gonna try the central distance algorithm, which scores motifs
+based on distance from the centre
+
+```bash
+# running without randomly drawn sequences - since that's the STREME results
+time ./bin/meme data/motifs/fasta/NA1_spliced.fasta \
+-oc data/motifs/meme_out_NA1_cd/ \ # will overwrite prev dir
+-V -alph meme_alphabet.txt \
+-objfun cd -nmotifs 8 -minsites 5 -maxsites 20 # 18 min
+
+time ./bin/meme data/motifs/fasta/NA2_spliced.fasta \
+-oc data/motifs/meme_out_NA2_cd/ \
+-V -alph meme_alphabet.txt \
+-objfun cd -nmotifs 8 -minsites 5 -maxsites 20 # 18 min
+
+time ./bin/meme data/motifs/fasta/mix_spliced.fasta \
+-oc data/motifs/meme_out_mix_cd/ \
+-V -alph meme_alphabet.txt \
+-objfun cd -nmotifs 8 -minsites 5 -maxsites 20 # 18 min
+
+time ./bin/meme data/motifs/fasta/all_spliced.fasta \
+-oc data/motifs/meme_out_all_cd/ \
+-V -alph meme_alphabet.txt \
+-objfun cd -nmotifs 8 -minsites 5 -maxsites 20
 ```
 
