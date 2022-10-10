@@ -127,6 +127,54 @@ going to generalize this to a snakemake script and then get to it:
 time snakemake -pr -s analysis/callability/callability.smk --cores 16
 ```
 
+## 8/10/2022
+
+I just realized there's a far better way to do this - for each of the tracts,
+I should retrieve the number of reads that cover it (eg span from before left bound
+to past right bound)
+
+I can just query the tract files in `data/callability/tracts` directly and create
+`.counts.tsv` files - just need a simple script that will, for each cross,
+fetch all reads at the SNP bound coordinates and count the ones that span
+
+giving this a go:
+
+```bash
+time snakemake -pr -s analysis/callability/callability.smk --cores 16
+# took 4 hours
+```
+
+## 9/10/2022
+
+today - using these files to get correct rates 
+
+going to generate callable denominators by looking at tracts > 0 -
+let's just generate files containing per-chrom counts, since these can be summed afterwards too
+
+going to add this as a snakemake script 
+
+```bash
+time snakemake -pr -s analysis/callability.smk
+# run summarise_tracts rule
+```
+
+I need to also get per-chr effective bp - this needs to be
+taking into account SNP deserts, so I need to scan the genome
+and not count effective bp that happens to be in those
+
+basically - for each tract that has more than one read spanning,
+use pileup with the start/end coord to get the total amount of bp
+that's actually within those tracts specifically
+
+see `tss_marks/get_distance.py` for the pileup thing 
+
+here goes:
+
+```bash
+time snakemake -pr -s analysis/callability.smk --cores 16
+# runs summarise_chrom_eff_bp rule
+```
+
 
 
 

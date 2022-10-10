@@ -1,5 +1,5 @@
 """
-create_snp_tract_bed.py - simple script to calculate inter-SNP tracts
+summarise_tracts.py - simple script to calculate inter-SNP tracts
 
 intended to be run as part of callability.smk and not as a standalone script
 

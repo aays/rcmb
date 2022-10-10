@@ -44,11 +44,15 @@ rule all:
     input:
         expand('data/callability/tracts/{cross}.tracts.tsv', cross=CROSSES),
         'data/callability/tract_distribution.tsv',
-        expand('data/callability/coverage/{parent}.cov.temp.tsv', parent=PARENTS)
+        expand('data/callability/coverage/{parent}.cov.temp.tsv', parent=PARENTS),
+        expand('data/callability/tracts/{cross}.read_counts.tsv', cross=CROSSES),
+        'data/callability/callables/chrom_callables.tsv',
+        expand('data/callability/eff_bp/{cross}.chrom.tsv', cross=CROSSES)
+
 
 rule create_snp_tract_bed:
     input:
-        'data/genotyping/vcf_filtered/{cross}.vcf.gz',
+        'data/genotyping/vcf_filtered/{cross}.vcf.gz'
     output:
         'data/callability/tracts/{cross}.tracts.tsv'
     script:
@@ -71,3 +75,30 @@ rule windowed_coverage:
         window_size = 2000
     script:
         'windowed_coverage.py'
+
+rule get_tract_counts:
+    input:
+        tracts = 'data/callability/tracts/{cross}.tracts.tsv',
+        bam = 'data/alignments/bam_prepped/sorted/{cross}.sorted.bam'
+    output:
+        'data/callability/tracts/{cross}.read_counts.tsv'
+    script:
+        'get_tract_read_counts.py'
+
+rule summarise_chroms:
+    input:
+        expand('data/callability/tracts/{cross}.read_counts.tsv', cross=CROSSES)
+    output:
+        'data/callability/callables/chrom_callables.tsv'
+    script:
+        'summarise_chroms.py'
+
+rule summarise_chrom_eff_bp:
+    input:
+        'data/callability/tracts/{cross}.read_counts.tsv'
+    output:
+        'data/callability/eff_bp/{cross}.chrom.tsv'
+    script:
+        'summarise_chrom_eff_bp.py'
+
+    
