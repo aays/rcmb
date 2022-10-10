@@ -6,13 +6,14 @@ import csv
 import math
 import pysam
 import argparse
+from glob import glob
 from tqdm import tqdm
 from cyvcf2 import VCF
 
 def args():
     parser = argparse.ArgumentParser(
-        description='', 
-        usage='python script.py [options]')
+        description='get distance to TSS + chromatin marks', 
+        usage='python get_distance.py [options]')
 
     parser.add_argument('-f', '--fname', required=True,
         type=str, help='List of recombination events')
@@ -23,9 +24,9 @@ def args():
     # parser.add_argument('--cov_dir', required=True,
         # type=str, help='Dir containing parental coverage files')
     parser.add_argument('-b', '--bam', required=True,
-        type=str, help='Path to position-sorted recombinant BAM')
+        type=str, help='Path to dir containing position-sorted recombinant BAMs')
     parser.add_argument('-v', '--vcf', required=True,
-        type=str, help='Path to cross VCF')
+        type=str, help='Path to dir containing cross VCFs')
     parser.add_argument('-w', '--window_size', required=True,
         type=int, help='Window size')
     parser.add_argument('-o', '--out', required=True,
@@ -53,9 +54,11 @@ def get_tss_info(chrom, co_pos, tss_tabix, args):
         elif strand == '-':
             tss_positions.append(int(end))
             tts_positions.append(int(start))
-    min_pos_dist = min([abs(pos - co_pos) for pos in tss_positions])
+    min_pos_dist = min([abs(co_pos - pos) for pos in tss_positions])
     min_pos = [pos for pos in tss_positions
-        if abs(pos - co_pos) == min_pos_dist][0]
+        if abs(co_pos - pos) == min_pos_dist][0]
+    # get actual min pos dist
+    min_pos_dist = co_pos - min_pos
     # get intergenic tract size
     intergenic_dists = [(min_pos - tts) for tts in tts_positions]
     # remove any instances where gene's own tts is closer than prev tts
@@ -100,7 +103,7 @@ def get_peak_info(chrom, co_pos, peaks_tabix, args):
     chrom, peak_start, peak_end = nearest_peak.split('\t')[:3]
     return peak_start, peak_end
 
-def get_dist_window(chrom, feature_midpoint, min_pos_dist, args):
+def get_dist_window(cross, chrom, feature_midpoint, min_pos_dist, args):
     """
     use dist to TSS/peak + feature midpoint + feature pos to get a window and return
         - sum of possible rcmb seq in bp
@@ -123,21 +126,31 @@ def get_dist_window(chrom, feature_midpoint, min_pos_dist, args):
     # get genomic positions of window
     genomic_start = feature_midpoint + window_start
     genomic_end = feature_midpoint + window_end
-    if genomic_start < 0:
-        print('what the fuck', feature_midpoint, window_start, min_pos_dist, genomic_start)
 
     # get sum of possible rcmb seq
-    bam = pysam.AlignmentFile(args.bam, 'rb')
+    # get bam file
+    bam_fname = [
+        fname for fname in glob(args.bam + '*bam')
+        if cross in fname and fname.endswith('.bam')]
+    assert len(bam_fname) == 1
+    bam_fname = bam_fname[0]
+    bam = pysam.AlignmentFile(bam_fname, 'rb')
     eff_bp = 0
     for p_column in bam.pileup(chrom, genomic_start, genomic_end):
         # tested this and it only counts overlapping reads once - nice
         for p_read in p_column.pileups: # all unique read pairs at base
             eff_bp += 1
+    bam.close()
 
     # get count of SNPs in window 
     # can be used to get SNP density at whichever scale (per cross, overall, etc)
     # by dividing by sequence considered 
-    vcf_reader = VCF(args.vcf)
+    vcf_fname = [
+        fname for fname in glob(args.vcf + '*vcf.gz')
+        if cross in fname and fname.endswith('.vcf.gz')]
+    assert len(vcf_fname) == 1
+    vcf_fname = vcf_fname[0]
+    vcf_reader = VCF(vcf_fname)
     snp_count = len([snp for snp in vcf_reader(f'{chrom}:{genomic_start}-{genomic_end}')])
     vcf_reader.close() 
 
@@ -162,6 +175,7 @@ def parse_cos(args):
             peak_reader = pysam.TabixFile(args.peaks)
 
             for line in tqdm(reader):
+                cross = line['cross']
                 chrom = line['chromosome']
                 if chrom in ['cpDNA', 'mtDNA']:
                     continue
@@ -171,7 +185,7 @@ def parse_cos(args):
                 tss_nearest, tss_dist, intergenic_tract_length, prev_tts, tss_line = \
                     get_tss_info(chrom, midpoint, tss_reader, args)
                 tss_window_start, tss_window_end, tss_eff_bp, tss_snp_count = \
-                    get_dist_window(chrom, tss_nearest, tss_dist, args)
+                    get_dist_window(cross, chrom, tss_nearest, tss_dist, args)
 
                 # peaks
                 peak_start, peak_end = get_peak_info(
@@ -179,7 +193,7 @@ def parse_cos(args):
                 peak_midpoint = int(peak_start) + int((int(peak_end) - int(peak_start)) / 2)
                 peak_dist = int(midpoint - peak_midpoint)
                 peak_window_start, peak_window_end, peak_eff_bp, peak_snp_count = \
-                    get_dist_window(chrom, peak_midpoint, peak_dist, args)
+                    get_dist_window(cross, chrom, peak_midpoint, peak_dist, args)
                 out_dict = {
                     'cross': line['cross'], 'type': line['type'],
                     'chromosome': chrom, 'midpoint': line['midpoint'],

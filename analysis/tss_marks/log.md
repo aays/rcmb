@@ -231,3 +231,46 @@ time python analysis/tss_marks/get_distance.py \
 --out data/tss_marks/tss_marks_all.tsv
 ```
 
+## 6/10/2022
+
+generating a neutral expectation for the COs - need a script that will
+take counts of COs per chr per sample and then output a file similar
+to my all COs file except with evenly spaced positions 
+
+giving this a go:
+
+```bash
+time python analysis/tss_marks/neutral_cos.py \
+--fname data/phase_changes/crossovers_lasso/crossovers_all_corrected.tsv \
+--out data/tss_marks/neutral_cos.tsv
+```
+
+looks good - and now to get the TSS/marks distances:
+
+WAIT - there's a bug - I've been using the 2343x1691 bam and VCF for _all_
+of the windows! let's fix up the script so that each cross gets its own
+proper denominator and SNP density
+
+```bash
+time python analysis/tss_marks/get_distance.py \
+--fname data/phase_changes/crossovers_lasso/crossovers_all_corrected.tsv \
+--tss data/tss_marks/tss_sites_sorted.tsv.gz \
+--peaks data/tss_marks/H3K4me3_peaks.narrowPeak.gz \
+--bam data/alignments/bam_prepped/sorted/ \
+--vcf data/genotyping/vcf_filtered/ \
+--window_size 100 \
+--out data/tss_marks/tss_marks_all.tsv
+```
+
+and then also running this on the neutral COs anyways:
+
+```bash
+time python analysis/tss_marks/get_distance.py \
+--fname data/tss_marks/neutral_cos.tsv \
+--tss data/tss_marks/tss_sites_sorted.tsv.gz \
+--peaks data/tss_marks/H3K4me3_peaks.narrowPeak.gz \
+--bam data/alignments/bam_prepped/sorted/ \
+--vcf data/genotyping/vcf_filtered/ \
+--window_size 100 \
+--out data/tss_marks/tss_marks_neutral.tsv
+```
