@@ -173,7 +173,11 @@ here goes:
 ```bash
 time snakemake -pr -s analysis/callability.smk --cores 16
 # runs summarise_chrom_eff_bp rule
+# done in 7 hours
 ```
+
+nts - if this doesn't work and needs rerunning, consider
+implementing `multiprocessing.imap`
 
 
 

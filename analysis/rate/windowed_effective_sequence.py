@@ -7,7 +7,7 @@ import os
 import math
 import csv
 import argparse
-import numpy as np
+import pysam
 from tqdm import tqdm
 import readcomb.classification as rc
 
@@ -18,8 +18,8 @@ def args():
 
     parser.add_argument('-b', '--bam', required=True,
         type=str, help='BAM file containing all reads considered for phase changes')
-    parser.add_argument('-v', '--vcf', required=True,
-        type=str, help='Corresponding VCF file')
+    parser.add_argument('-s', '--snp_read_counts', required=True,
+        type=str, help='SNP tract read count file')
     parser.add_argument('-w', '--window_size', required=True,
         type=int, help='Window size (default 1000)')
     parser.add_argument('-o', '--out', required=True,
@@ -27,7 +27,7 @@ def args():
 
     args = parser.parse_args()
 
-    return args.bam, args.vcf, args.window_size, args.out
+    return args.bam, args.snp_read_counts, args.window_size, args.out
 
 lengths = {
     'chromosome_01': 8225636,
@@ -46,114 +46,88 @@ lengths = {
     'chromosome_14': 4217303,
     'chromosome_15': 5870643,
     'chromosome_16': 8042475,
-    'chromosome_17': 6954842,
-    'cpDNA': 205535,
-    'mtDNA': 15789 # including organelles for mt leakage
+    'chromosome_17': 6954842
     }
 
-def create_array_set(lengths, window_size):
-    """generate generic set of arrays for provided chromosomes/contigs
-    given a window size, will create length-L numpy arrays for each provided chromosome
-    where L is chrom_length / window_size. the individual elements of the array
-    represent windows, and windows can be recapitulated via element_index * window_size
-    Parameters
-    ----------
-    lengths : dict
-        dict of chromosome/contig/scaffold lengths
-    window_size : int
-        desired window size to split chrs/contigs/scaffolds into
-    Returns
-    -------
-    arrays : dict
-        dict of numpy arrays, with keys corresponding to chrs/contigs/scaffolds
-    """
-    arrays = {}
-    for chrom in lengths.keys():
-        array_len = len(range(0, lengths[chrom], window_size)) + 1 # add 1 for window end
-        arrays[chrom] = np.zeros(array_len)
-    return arrays
+def get_eff_bp(bam_reader, chrom, start, end):
+    eff_bp = 0
+    for p_column in bam_reader.pileup(chrom, start, end, truncate=True):
+        for p_read in p_column.pileups:
+            eff_bp += 1
+    return eff_bp
 
-def parse_pair(pair):
-    """get effective sequence + midpoint of given pair
+def denominator_counts(bam, snp_read_counts, window_size, out, lengths):
 
-    Parameters
-    ----------
-    pair : classification.Pair
-        read pair of interest
+    chrom_windows = {}
+    for chrom in lengths:
+        window_range = 0, lengths[chrom]
+        chrom_windows[chrom] = list(range(0, lengths[chrom], window_size))
+        chrom_windows[chrom].append(lengths[chrom])
 
-    Returns
-    -------
-    chrom : str
-        pair chromosome
-    midpoint : int
-        pair midpoint (halfway point)
-    effective_length : int
-        total effective sequence of pair
-    """
-    chrom = pair.rec_1.reference_name
-    start = pair.rec_1.reference_start
-    end = pair.rec_2.reference_start + len(pair.segment_2)
-    effective_length = end - start
-    midpoint = start + int(effective_length / 2) # will round down if needed
-    return chrom, midpoint, effective_length
+    with open(snp_read_counts, 'r') as f_in:
+        with open(out, 'w') as f_out:
+            reader = csv.DictReader(f_in, delimiter='\t')
+            fieldnames = [
+                'cross', 'chrom', 'window_start', 'window_end', 'eff_bp']
+            cross = os.path.basename(bam.rstrip('sorted.bam'))
+            writer = csv.DictWriter(f_out, delimiter='\t', fieldnames=fieldnames)
+            writer.writeheader()
 
-def denominator_counts(bam, vcf, window_size, out, lengths):
-    """get effective sequence per window
+            reader = pysam.TabixFile(snp_read_counts)
+            bam_reader = pysam.AlignmentFile(bam)
 
-    Parameters
-    ----------
-    bam : str
-        path to readcomb prepped BAM file for cross
-    vcf : str
-        path to readcomb prepped VCF file for cross
-    window_size : int
-        window size to use
-    out : str
-        file to write to
+            for chrom in tqdm(chrom_windows):
+                windows = chrom_windows[chrom]
+                for i, window_start in tqdm(enumerate(windows), total=len(windows)):
+                    window_end = window_start + window_size \
+                        if i < len(windows) - 1 else lengths[chrom]
 
-    Returns
-    -------
-    None
-    """
-    reader = rc.pairs_creation(bam, vcf)
-    effective_seq_arrays = create_array_set(lengths, window_size)
-    read_count_arrays = create_array_set(lengths, window_size)
-    cross = os.path.basename(bam).rstrip('.sorted.bam')
+                    tracts = [
+                        r for r in reader.fetch(chrom, window_start, window_end)]
+                    coords = []
 
-    for pair in tqdm(reader, desc=cross):
-        if pair.rec_1.reference_name not in lengths: # ignore non chroms
-            continue
-        chrom, midpoint, effective_seq = parse_pair(pair)
-        window = math.floor(midpoint / window_size)
-        effective_seq_arrays[chrom][window] += effective_seq
-        read_count_arrays[chrom][window] += 1
+                    # get tracts
+                    for tract in tracts:
+                        _, start, end, _, pairs_span, _ = tract.split('\t')
+                        start, end, pairs_span = int(start), int(end), int(pairs_span)
+                        if pairs_span > 0:
+                            coords.append([start, end])
+                    
+                    # handle
+                    if not coords:
+                        out_dict = {
+                            'cross': cross,
+                            'chrom': chrom,
+                            'window_start': window_start,
+                            'window_end': window_end,
+                            'eff_bp': 0
+                            }
+                        writer.writerow(out_dict)
+                    
+                    window_eff_bp = 0
+                    for snp_1, snp_2 in coords:
+                        if snp_1 < window_start:
+                            window_eff_bp += get_eff_bp(
+                                bam_reader, chrom, window_start, snp_2)
+                        elif snp_2 > window_end:
+                            window_eff_bp += get_eff_bp(
+                                bam_reader, chrom, snp_1, window_end)
+                        else:
+                            window_eff_bp += get_eff_bp(
+                                bam_reader, chrom, snp_1, snp_2)
+                    out_dict = {
+                        'cross': cross,
+                        'chrom': chrom,
+                        'window_start': window_start,
+                        'window_end': window_end,
+                        'eff_bp': window_eff_bp
+                        }
+                    writer.writerow(out_dict)
 
-    with open(out, 'w') as f:
-        fieldnames = [
-            'cross', 'chromosome', 'window_start', 'window_end',
-            'read_count', 'effective_sequence']
-        writer = csv.DictWriter(f, delimiter='\t', fieldnames=fieldnames)
-        writer.writeheader()
-
-        for chrom in tqdm(lengths):
-            windows = range(0, lengths[chrom], window_size)
-            for i, window_start in enumerate(windows):
-                window_end = window_start + window_size \
-                    if i < len(windows) - 1 else lengths[chrom]
-
-                out_dict = {
-                    'cross': cross,
-                    'chromosome': chrom,
-                    'window_start': window_start,
-                    'window_end': window_end,
-                    'read_count': int(read_count_arrays[chrom][i]),
-                    'effective_sequence': int(effective_seq_arrays[chrom][i])
-                    }
-                writer.writerow(out_dict)
 
 def main():
-    bam, vcf, window_size, out = args()
-    denominator_counts(bam, vcf, window_size, out, lengths)
+    bam, snp_read_counts, window_size, out = args()
+    denominator_counts(bam, snp_read_counts, window_size, out, lengths)
 
 if __name__ == '__main__':
     main()

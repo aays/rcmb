@@ -39,22 +39,20 @@ mkdir('data/rate/snp_density/')
 
 rule all:
     input:
-        expand('data/rate/denominators/2kb/{cross}.tsv', cross=CROSSES),
+        expand('data/rate/denominators/{cross}.tsv', cross=CROSSES),
         expand('data/rate/snp_density/{cross}.snps.2kb.tsv', cross=CROSSES)
 
 rule windowed_denominator_calc:
     input:
-        bam = 'data/alignments/bam_prepped/{cross}.sorted.bam',
-        vcf = 'data/genotyping/vcf_filtered/{cross}.vcf.gz'
+        bam = 'data/alignments/bam_prepped/sorted/{cross}.sorted.bam',
+        tracts = 'data/callability/tracts/read_counts_tabix/{cross}.read_counts.tsv.gz'
     output:
-        'data/rate/denominators/2kb/{cross}.tsv'
-    threads:
-        12
+        'data/rate/denominators/{cross}.tsv'
     params:
         window_size = '2000'
     shell:
         'time python analysis/rate/windowed_effective_sequence.py '
-        ' --bam {input.bam} --vcf {input.vcf} '
+        ' --bam {input.bam} --snp_read_counts {input.tracts} '
         '--window_size {params.window_size} --out {output}'
 
 rule windowed_snp_counts:

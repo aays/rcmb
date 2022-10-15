@@ -59,7 +59,7 @@ def summarise_chrom_eff_bp(read_counts_file, tsv_output):
 
                 start = int(line['snp_1'])
                 end = int(line['snp_2'])
-                for p_column in bam_reader.pileup(chrom, start, end):
+                for p_column in bam_reader.pileup(chrom, start, end, truncate=True):
                     for p_read in p_column.pileups:
                         d[chrom]['eff_bp'] += 1
                 d[chrom]['total_tract_seq'] += end - start
