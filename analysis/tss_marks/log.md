@@ -274,3 +274,67 @@ time python analysis/tss_marks/get_distance.py \
 --window_size 100 \
 --out data/tss_marks/tss_marks_neutral.tsv
 ```
+
+## 10/10/2022
+
+I still did this wrong - these `eff_bp` denominators were wrong again - 
+let's rerun this using the `truncate` option, which should calculate
+the bases in a given window correctly 
+
+```bash
+# also updated the script to ignore the contaminated crosses
+# regular COs
+time python analysis/tss_marks/get_distance.py \
+--fname data/phase_changes/crossovers_lasso/crossovers_all_corrected.tsv \
+--tss data/tss_marks/tss_sites_sorted.tsv.gz \
+--peaks data/tss_marks/H3K4me3_peaks.narrowPeak.gz \
+--bam data/alignments/bam_prepped/sorted/ \
+--vcf data/genotyping/vcf_filtered/ \
+--window_size 100 \
+--out data/tss_marks/tss_marks_all.tsv
+
+# randomly drawn COs
+time python analysis/tss_marks/get_distance.py \
+--fname data/tss_marks/neutral_cos.tsv \
+--tss data/tss_marks/tss_sites_sorted.tsv.gz \
+--peaks data/tss_marks/H3K4me3_peaks.narrowPeak.gz \
+--bam data/alignments/bam_prepped/sorted/ \
+--vcf data/genotyping/vcf_filtered/ \
+--window_size 100 \
+--out data/tss_marks/tss_marks_neutral.tsv
+```
+
+## 18/10/2022
+
+I think I've been using the wrong GFF! just used the `primaryTrs` GFF and there
+are far fewer (17k instead of 32k) TSSes - maybe this is why things have been going wrong
+
+going to move the alt one into our data folder and do this again:
+
+```bash
+# generated TSS file using code at the top of this log, just with other GFF
+# in data/tss_marks/
+
+sort -k1,1 -k2,2n tss_sites_alt.tsv > tss_sites_sorted_alt.tsv
+bgzip tss_sites_sorted_alt.tsv
+tabix -p vcf tss_sites_sorted_alt.tsv.gz
+
+time python analysis/tss_marks/get_distance.py \
+--fname data/phase_changes/crossovers_lasso/crossovers_all_corrected.tsv \
+--tss data/tss_marks/tss_sites_sorted_alt.tsv.gz \
+--peaks data/tss_marks/H3K4me3_peaks.narrowPeak.gz \
+--bam data/alignments/bam_prepped/sorted/ \
+--vcf data/genotyping/vcf_filtered/ \
+--window_size 100 \
+--out data/tss_marks/tss_marks_all_alt.tsv
+
+# randomly drawn COs
+time python analysis/tss_marks/get_distance.py \
+--fname data/tss_marks/neutral_cos.tsv \
+--tss data/tss_marks/tss_sites_sorted_alt.tsv.gz \
+--peaks data/tss_marks/H3K4me3_peaks.narrowPeak.gz \
+--bam data/alignments/bam_prepped/sorted/ \
+--vcf data/genotyping/vcf_filtered/ \
+--window_size 100 \
+--out data/tss_marks/tss_marks_neutral_alt.tsv
+```

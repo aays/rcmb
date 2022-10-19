@@ -136,7 +136,7 @@ def get_dist_window(cross, chrom, feature_midpoint, min_pos_dist, args):
     bam_fname = bam_fname[0]
     bam = pysam.AlignmentFile(bam_fname, 'rb')
     eff_bp = 0
-    for p_column in bam.pileup(chrom, genomic_start, genomic_end):
+    for p_column in bam.pileup(chrom, genomic_start, genomic_end, truncate=True):
         # tested this and it only counts overlapping reads once - nice
         for p_read in p_column.pileups: # all unique read pairs at base
             eff_bp += 1
@@ -178,6 +178,8 @@ def parse_cos(args):
                 cross = line['cross']
                 chrom = line['chromosome']
                 if chrom in ['cpDNA', 'mtDNA']:
+                    continue
+                if cross in ['3071x2931', '3071x3062']:
                     continue
                 midpoint = int(line['midpoint'].split(':')[1])
 
